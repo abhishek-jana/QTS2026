@@ -5,7 +5,7 @@ import torch
 from datetime import datetime, timedelta
 from research_lab.alpha_universe import AlphaUniverse
 from research_lab.plugins.core_plugins import SequentialPlugin, SpatialPlugin
-
+from research_lab.real_data_ingestor import YFinanceIngestor
 from research_lab.alpha_ranker import MultiModalRankNet
 
 class DataStreamer:
