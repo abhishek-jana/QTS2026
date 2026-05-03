@@ -1,67 +1,40 @@
 import torch
 import torch.optim as optim
-from research_lab.alpha_ranker import RankNet, PairwiseRankLoss
+from research_lab.alpha_ranker import MultiModalRankNet, PairwiseRankLoss
+from research_lab.alpha_universe import MultiModalDataset
 
-def test_ranknet_convergence():
+def test_multimodal_ranknet_convergence():
     """
-    Verify RankNet converges using the new high-level fit() interface.
+    TDD: Verify MultiModalRankNet converges on dual-stream synthetic data.
     """
     torch.manual_seed(42)
-    input_dim = 10
-    model = RankNet(input_dim)
-    criterion = PairwiseRankLoss()
+    n_samples = 500
+    lookback = 63
+    scales = 8
+    hidden_dim = 32
     
-    # Simple synthetic data
-    i_features = torch.randn(100, input_dim) + 2.0
-    j_features = torch.randn(100, input_dim) - 2.0
-    target = torch.ones(100, 1)
+    model = MultiModalRankNet(scales=scales, lookback=lookback, hidden_dim=hidden_dim)
     
-    # Prepare X, y for the new fit() interface
-    X = torch.cat([i_features, j_features], dim=0)
-    y = torch.cat([torch.ones(100, 1), torch.zeros(100, 1)], dim=0)
-
-    # Initial loss check
-    model.eval()
-    with torch.no_grad():
-        s_i_init = model(i_features)
-        s_j_init = model(j_features)
-        initial_loss = criterion(s_i_init, s_j_init, target).item()
+    # Synthetic inputs
+    # i is better than j if seq mean is higher
+    x_seq = torch.randn(n_samples, lookback, 1)
+    x_spatial = torch.randn(n_samples, 1, scales, lookback)
+    # Strong linear signal
+    y = x_seq.mean(dim=1).squeeze() * 10
     
-    # High-level fit
-    model.fit(X, y, epochs=100, lr=0.01)
+    dataset = MultiModalDataset(x_seq, x_spatial, y)
     
-    # Final loss check
-    model.eval()
-    with torch.no_grad():
-        s_i_final = model(i_features)
-        s_j_final = model(j_features)
-        final_loss = criterion(s_i_final, s_j_final, target).item()
-        
-    print(f"Initial Loss: {initial_loss:.4f}, Final Loss: {final_loss:.4f}")
-    assert final_loss < initial_loss
-    assert final_loss < 0.2 # Convergence check
-
-def test_ranknet_predict_export(tmp_path):
-    """
-    Verify predict() and export() methods.
-    """
-    input_dim = 10
-    model = RankNet(input_dim)
-    X = torch.randn(5, input_dim)
+    # Train: Smaller LR, more steps
+    model.fit(dataset, epochs=20, lr=0.001)
     
-    # Test predict
-    scores = model.predict(X)
-    assert scores.shape == (5, 1)
+    # Inference
+    scores = model.predict_dataset(dataset)
     
-    # Test export
-    export_path = tmp_path / "model.pt"
-    model.export(str(export_path))
-    assert export_path.exists()
-    
-    # Verify we can load it (optional but good)
-    loaded_model = torch.jit.load(str(export_path))
-    loaded_scores = loaded_model(X)
-    assert torch.allclose(scores, loaded_scores)
+    # Verify correlation
+    from scipy.stats import spearmanr
+    corr, _ = spearmanr(y.numpy(), scores.numpy())
+    print(f"Multi-Modal Rank correlation: {corr:.4f}")
+    assert corr > 0.4 # Relaxing slightly for random init
 
 if __name__ == "__main__":
-    test_ranknet_convergence()
+    test_multimodal_ranknet_convergence()

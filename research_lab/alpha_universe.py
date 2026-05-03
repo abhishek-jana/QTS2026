@@ -1,75 +1,69 @@
 import pandas as pd
 import numpy as np
-from datetime import datetime
+import torch
+from torch.utils.data import Dataset
+from datetime import datetime, timedelta
 from research_lab.data_engine import DataEngine
 from research_lab.alpha_core import FractionalDifferencer, WaveletFeatureGenerator
 from research_lab.alpha_labeler import AlphaLabeler
 
+class MultiModalDataset(Dataset):
+    """
+    Encapsulates dual-stream data for Multi-Modal RankNet.
+    """
+    def __init__(self, x_seq, x_spatial, y, tickers=None, times=None):
+        self.x_seq = x_seq
+        self.x_spatial = x_spatial
+        self.y = y
+        self.tickers = tickers
+        self.times = times
+
+    def __len__(self):
+        return len(self.y)
+
+    def __getitem__(self, idx):
+        return {
+            'x_seq': self.x_seq[idx],
+            'x_spatial': self.x_spatial[idx],
+            'y': self.y[idx]
+        }
+
 class AlphaUniverse:
     """
-    AlphaUniverse: A 'Deep Module' that orchestrates data fetching, 
-    feature generation (Fractional Diff, Wavelets), and target labeling 
-    (Residualization, Z-Scoring) into a single, bi-temporally aligned dataset.
+    AlphaUniverse: Orchestrates data fetching, rolling window generation,
+    and target labeling for Multi-Modal Fusion (LSTM + ViT).
     """
     def __init__(self, data_engine: DataEngine = None):
         self.engine = data_engine or DataEngine()
         self.labeler = AlphaLabeler()
 
-    def get_aligned_dataset(self, tickers: list, as_of_date: datetime, horizon: int = 21, d_param: float = 0.4, scales: np.ndarray = None):
+    def get_aligned_dataset(self, tickers: list, as_of_date: datetime, horizon: int = 21, lookback: int = 63, d_param: float = 0.4, scales: np.ndarray = None):
         """
-        Returns a bi-temporally aligned DataFrame with features and labels.
+        Returns a MultiModalDataset with sliding windows.
         
         Parameters:
             tickers: List of ticker symbols.
-            as_of_date: Knowledge time threshold for the PIT view.
+            as_of_date: Knowledge time threshold.
             horizon: Forward return horizon for labels.
+            lookback: Sequence length (T).
             d_param: Fractional differentiation parameter.
             scales: Wavelet scales.
-            
-        Returns:
-            pd.DataFrame: A ready-for-training dataset with columns:
-                          [event_time, ticker, scale_0, ..., scale_N, label]
         """
-        # 1. Fetch PIT views for all tickers
-        all_pit_views = {}
-        for ticker in tickers:
-            all_pit_views[ticker] = self.engine.get_pit_view(ticker, as_of_date)
-            
-        # 2. Generate features for each ticker
-        all_features = []
+        all_pit_views = {t: self.engine.get_pit_view(t, as_of_date) for t in tickers}
+        
         fd = FractionalDifferencer(d=d_param)
         wfg = WaveletFeatureGenerator(scales=scales)
         
-        for ticker in tickers:
-            view = all_pit_views[ticker]
-            if view.empty:
-                continue
-            
-            # Apply Fractional Differentiation
-            stationary = fd.transform(view['close'])
-            
-            # Generate Wavelet Spectrogram
-            spectrogram = wfg.generate(stationary) 
-            
-            # Convert spectrogram to features (n_timesteps x n_scales)
-            feat_cols = [f'scale_{i}' for i in range(spectrogram.shape[0])]
-            ticker_feats = pd.DataFrame(spectrogram.T, columns=feat_cols, index=view['event_time'])
-            ticker_feats['ticker'] = ticker
-            all_features.append(ticker_feats)
-            
-        if not all_features:
-            return pd.DataFrame()
-            
-        features_df = pd.concat(all_features).reset_index()
+        x_seq_list = []
+        x_spatial_list = []
+        y_list = []
+        ticker_list = []
+        time_list = []
         
-        # 3. Generate labels (Residualized & Z-Scored)
+        # 1. Generate labels first to know alignment targets
         combined_pit_view = pd.concat(all_pit_views.values())
-        
-        # Generate forward returns
         returns_df = self.labeler.generate_labels(combined_pit_view, horizon=horizon)
         
-        # Residualize Universe
-        # Use 'SPY' as market proxy if available, else use cross-sectional mean
         if 'SPY' in returns_df.columns:
             market_proxy = returns_df['SPY']
             asset_returns = returns_df.drop(columns=['SPY'])
@@ -80,21 +74,48 @@ class AlphaUniverse:
         residuals = self.labeler.residualize_universe(asset_returns, market_proxy)
         z_scored_labels = self.labeler.apply_z_score(residuals)
         
-        # Melt labels to long format: [event_time, ticker, label]
-        labels_long = z_scored_labels.reset_index().melt(
-            id_vars='event_time', 
-            var_name='ticker', 
-            value_name='label'
+        # 2. Extract sequences for each ticker
+        for ticker in tickers:
+            if ticker not in z_scored_labels.columns:
+                continue
+                
+            view = all_pit_views[ticker]
+            if len(view) < lookback:
+                continue
+                
+            # Apply FD
+            stationary = fd.transform(view['close']).values
+            # Apply Wavelets
+            spectrogram = wfg.generate(pd.Series(stationary)) # Shape: (Scales, T_total)
+            
+            # Target labels for this ticker
+            ticker_labels = z_scored_labels[ticker].dropna()
+            
+            # Align sequences ending at T with labels starting at T
+            for t in range(lookback, len(view)):
+                event_time = view.iloc[t-1]['event_time']
+                
+                if event_time not in ticker_labels.index:
+                    continue
+                
+                # Sequential input: [T-lookback : T]
+                seq_window = stationary[t-lookback:t].reshape(-1, 1)
+                # Spatial input: [Scales, T-lookback : T]
+                spatial_window = spectrogram[:, t-lookback:t]
+                
+                x_seq_list.append(seq_window)
+                x_spatial_list.append(spatial_window)
+                y_list.append(ticker_labels.loc[event_time])
+                ticker_list.append(ticker)
+                time_list.append(event_time)
+                
+        if not y_list:
+            return None
+            
+        return MultiModalDataset(
+            x_seq=torch.tensor(np.array(x_seq_list)).float(),
+            x_spatial=torch.tensor(np.array(x_spatial_list)).unsqueeze(1).float(), # Add channel dim
+            y=torch.tensor(np.array(y_list)).float(),
+            tickers=ticker_list,
+            times=time_list
         )
-        
-        # 4. Bi-temporal alignment via inner join
-        # This ensures that we only keep (event_time, ticker) pairs that have 
-        # both features and a valid forward-looking label.
-        final_dataset = pd.merge(
-            features_df, 
-            labels_long, 
-            on=['event_time', 'ticker'], 
-            how='inner'
-        ).dropna(subset=['label'])
-        
-        return final_dataset.sort_values(['event_time', 'ticker'])
