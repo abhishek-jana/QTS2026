@@ -167,7 +167,7 @@ export default function MissionControl() {
   return (
     <div className="h-screen w-full bg-black text-slate-300 font-mono text-xs overflow-hidden flex flex-col p-2 gap-2">
       {/* Header */}
-      <div className="flex justify-between items-center border-b border-slate-800 pb-2">
+      <div className="flex-none h-12 flex justify-between items-center border-b border-slate-800 pb-2">
         <div className="flex items-center gap-4">
           <div className="text-lg font-bold text-emerald-500">UQTS-2026 MISSION CONTROL</div>
           <div className="flex items-center gap-2">
@@ -184,30 +184,30 @@ export default function MissionControl() {
         </button>
       </div>
 
-      {/* Grid Layout */}
-      <div className="flex-1 grid grid-cols-12 grid-rows-6 gap-2">
+      {/* Grid Layout - HARD CONSTRAINED */}
+      <div className="flex-1 grid grid-cols-12 grid-rows-[repeat(6,minmax(0,1fr))] gap-2 min-h-0 overflow-hidden">
         
         {/* 1. Spectral & Signal Viewer */}
         <Panel title="Spectral & Signal Viewer" icon={Activity} className="col-span-4 row-span-3">
-          <div className="flex flex-col gap-2 h-full min-h-0">
-            <div className="basis-3/5 min-h-0 relative">
+          <div className="flex flex-col gap-2 h-full min-h-0 overflow-hidden">
+            <div className="flex-[4] min-h-0 relative h-0">
               <Heatmap data={data.spectral.cwt} title={`${data.spectral.ticker} Wavelet Spectrogram (Morlet)`} />
             </div>
-            <div className="basis-1/5 grid grid-cols-2 gap-2 mt-2">
-              <div className="bg-slate-800/50 p-2 border border-slate-700 flex flex-col justify-center">
+            <div className="flex-[1] grid grid-cols-2 gap-2 min-h-0">
+              <div className="bg-slate-800/50 p-2 border border-slate-700 flex flex-col justify-center overflow-hidden">
                 <div className="text-[10px] text-slate-500 uppercase tracking-tighter leading-none mb-1">ADF p-value</div>
                 <div className={`text-lg font-bold ${data.spectral.adf_p_value < 0.05 ? 'text-emerald-500' : 'text-red-500 animate-pulse'}`}>
                   {data.spectral.adf_p_value.toFixed(6)}
                 </div>
               </div>
-              <div className="bg-slate-800/50 p-2 border border-slate-700 flex flex-col justify-center">
+              <div className="bg-slate-800/50 p-2 border border-slate-700 flex flex-col justify-center overflow-hidden">
                 <div className="text-[10px] text-slate-500 uppercase tracking-tighter leading-none mb-1">Status</div>
                 <div className="flex gap-2 mt-1">
                   <span className="bg-emerald-900/30 text-emerald-400 px-1 border border-emerald-800 text-[8px] font-bold">STATIONARY</span>
                 </div>
               </div>
             </div>
-            <div className="basis-1/5 min-h-0 mt-1">
+            <div className="flex-[2] min-h-0 overflow-hidden">
               <div className="text-[9px] text-slate-500 mb-1 uppercase tracking-widest opacity-50">Feature Importance</div>
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={Object.entries(data.spectral.shap_values).map(([name, val]) => ({ name, val }))} layout="vertical">
