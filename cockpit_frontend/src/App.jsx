@@ -73,7 +73,7 @@ export default function MissionControl() {
     
     ws.current.onopen = () => setStatus('active');
     ws.current.onmessage = (event) => {
-      const payload = json.parse(event.data);
+      const payload = JSON.parse(event.data);
       setData(payload);
     };
     ws.current.onclose = () => setStatus('disconnected');
@@ -269,7 +269,7 @@ export default function MissionControl() {
                </div>
             </div>
             <div className="flex-1 ml-10 overflow-hidden bg-black p-2 border border-slate-800 text-emerald-500/80 text-[10px]">
-               <span className="animate-pulse mr-2">></span> {data.pipeline.training_progress}
+               <span className="animate-pulse mr-2">&gt;</span> {data.pipeline.training_progress}
             </div>
           </div>
         </Panel>
