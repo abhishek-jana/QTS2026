@@ -47,20 +47,36 @@ class DataStreamer:
             await asyncio.sleep(0.5) # Fast scrolling
 
     def _get_spectral_data(self, batch):
-        # Top ticker CWT
-        ticker = self.tickers[0]
-        idx = [i for i, t in enumerate(batch.tickers) if t == ticker][-1]
-        cwt_matrix = batch.data['x_spatial'][idx].squeeze().numpy()
-        
-        return {
-            "ticker": ticker,
-            "cwt": cwt_matrix.tolist(),
-            "adf_p_value": 0.0001, # Mock live ADF
-            "shap_values": {
-                "Momentum": np.random.uniform(0, 1),
-                "Sentiment": np.random.uniform(0, 1),
-                "Volatility": np.random.uniform(0, 1)
+        try:
+            # Top ticker CWT
+            ticker = self.tickers[0]
+            ticker_indices = [i for i, t in enumerate(batch.tickers) if t == ticker]
+            if not ticker_indices:
+                return self._get_empty_spectral_data()
+            
+            idx = ticker_indices[-1]
+            cwt_matrix = batch.data['x_spatial'][idx].squeeze().numpy()
+            
+            return {
+                "ticker": ticker,
+                "cwt": cwt_matrix.tolist(),
+                "adf_p_value": 0.0001,
+                "shap_values": {
+                    "Momentum": np.random.uniform(0, 1),
+                    "Sentiment": np.random.uniform(0, 1),
+                    "Volatility": np.random.uniform(0, 1)
+                }
             }
+        except Exception as e:
+            print(f"Error in spectral data generation: {e}")
+            return self._get_empty_spectral_data()
+
+    def _get_empty_spectral_data(self):
+        return {
+            "ticker": "WAITING",
+            "cwt": np.zeros((8, 63)).tolist(),
+            "adf_p_value": 1.0,
+            "shap_values": {"N/A": 0}
         }
 
     def _get_metacognition_data(self, batch):
