@@ -6,15 +6,21 @@ from datetime import datetime, timedelta
 from research_lab.alpha_universe import AlphaUniverse
 from research_lab.plugins.core_plugins import SequentialPlugin, SpatialPlugin
 
+from research_lab.real_data_ingestor import YFinanceIngestor
+
 class DataStreamer:
     def __init__(self, manager):
         self.manager = manager
         self.tickers = ["AAPL", "MSFT", "GOOG", "SPY"]
         self.lab = AlphaUniverse(plugins=[SequentialPlugin(), SpatialPlugin()])
-        # Generate enough history
-        self.lab.engine.generate_synthetic_pit_data(self.tickers, days=600)
-        # Start at a date where we have enough lookback (63) and forward horizon (21)
-        self.current_knowledge_time = datetime(2020, 5, 1) 
+        
+        # 1. Ingest Real Data
+        ingestor = YFinanceIngestor(self.lab.engine)
+        # Fetch last 2 years for robust lookback
+        ingestor.ingest_universe(self.tickers, "2022-01-01", "2024-05-03")
+        
+        # 2. Start at a stable point in real history
+        self.current_knowledge_time = datetime(2023, 1, 1) 
 
     async def start_streaming(self):
         """Simulates live market ticks and broadcasts to UI."""
