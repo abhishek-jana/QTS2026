@@ -27,12 +27,12 @@ import {
 // --- Components ---
 
 const Panel = ({ title, icon: Icon, children, className = "" }) => (
-  <div className={`bg-slate-900 border border-slate-700 p-4 flex flex-col h-full ${className}`}>
-    <div className="flex items-center gap-2 mb-4 border-b border-slate-800 pb-2">
+  <div className={`bg-slate-900 border border-slate-700 p-4 flex flex-col h-full overflow-hidden ${className}`}>
+    <div className="flex-none flex items-center gap-2 mb-4 border-b border-slate-800 pb-2">
       <Icon className="w-4 h-4 text-emerald-500" />
       <h2 className="text-xs font-mono uppercase tracking-widest text-slate-300 font-bold">{title}</h2>
     </div>
-    <div className="flex-1 overflow-hidden">
+    <div className="flex-1 overflow-y-auto no-scrollbar min-h-0">
       {children}
     </div>
   </div>
@@ -189,11 +189,11 @@ export default function MissionControl() {
         
         {/* 1. Spectral & Signal Viewer */}
         <Panel title="Spectral & Signal Viewer" icon={Activity} className="col-span-4 row-span-3">
-          <div className="flex flex-col gap-2 h-full min-h-0 overflow-hidden">
-            <div className="flex-[4] min-h-0 relative h-0">
+          <div className="flex flex-col gap-2 min-h-full">
+            <div className="h-48 flex-none relative">
               <Heatmap data={data.spectral.cwt} title={`${data.spectral.ticker} Wavelet Spectrogram (Morlet)`} />
             </div>
-            <div className="flex-[1] grid grid-cols-2 gap-2 min-h-0">
+            <div className="grid grid-cols-2 gap-2 flex-none mt-2">
               <div className="bg-slate-800/50 p-2 border border-slate-700 flex flex-col justify-center overflow-hidden">
                 <div className="text-[10px] text-slate-500 uppercase tracking-tighter leading-none mb-1">ADF p-value</div>
                 <div className={`text-lg font-bold ${data.spectral.adf_p_value < 0.05 ? 'text-emerald-500' : 'text-red-500 animate-pulse'}`}>
@@ -207,7 +207,7 @@ export default function MissionControl() {
                 </div>
               </div>
             </div>
-            <div className="flex-[2] min-h-0 overflow-hidden">
+            <div className="h-24 flex-none mt-1">
               <div className="text-[9px] text-slate-500 mb-1 uppercase tracking-widest opacity-50">Feature Importance</div>
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={Object.entries(data.spectral.shap_values).map(([name, val]) => ({ name, val }))} layout="vertical">
@@ -222,8 +222,8 @@ export default function MissionControl() {
 
         {/* 2. Metacognition Panel */}
         <Panel title="Metacognition Panel" icon={ShieldAlert} className="col-span-4 row-span-3">
-          <div className="flex flex-col h-full gap-4">
-             <div className="flex justify-between items-center bg-slate-800/50 p-4 border border-slate-700">
+          <div className="flex flex-col min-h-full gap-4">
+             <div className="flex-none flex justify-between items-center bg-slate-800/50 p-4 border border-slate-700">
                 <div className="flex flex-col">
                   <span className="text-[10px] text-slate-500 uppercase">Bayesian Belief Score</span>
                   <span className="text-3xl font-bold text-emerald-400">{(data.metacognition.belief_score * 100).toFixed(2)}%</span>
@@ -231,7 +231,7 @@ export default function MissionControl() {
                 <Gauge className="w-12 h-12 text-emerald-500 opacity-50" />
              </div>
              
-             <div className="h-40">
+             <div className="h-40 flex-none">
                 <div className="text-[10px] text-slate-500 mb-2 uppercase">Adversarial Drift (Training vs Live)</div>
                 <ResponsiveContainer width="100%" height="100%">
                   <ScatterChart>
@@ -244,7 +244,7 @@ export default function MissionControl() {
                 </ResponsiveContainer>
              </div>
 
-             <div className="flex-1">
+             <div className="h-24 flex-none">
                 <div className="text-[10px] text-slate-500 mb-2 uppercase">Alpha Decay Curve (30D)</div>
                 <ResponsiveContainer width="100%" height="100%">
                   <LineChart data={data.metacognition.alpha_decay.map((val, i) => ({ i, val }))}>
