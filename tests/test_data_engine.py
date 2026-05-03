@@ -96,3 +96,62 @@ def test_residualized_labeling():
     correlation = np.corrcoef(residuals, market_returns)[0, 1]
     assert abs(correlation) < 1e-10
     assert len(residuals) == len(asset_returns)
+
+def test_cross_sectional_zscoring():
+    """
+    RED: Test that the AlphaLabeler correctly Z-scores labels across tickers.
+    """
+    from research_lab.alpha_labeler import AlphaLabeler
+    labeler = AlphaLabeler()
+    
+    # Create mock residuals for 5 tickers
+    residuals = pd.DataFrame({
+        'AAPL': [0.01, 0.02, 0.03],
+        'MSFT': [-0.01, 0.0, 0.01],
+        'GOOG': [0.05, -0.05, 0.0],
+        'AMZN': [0.1, 0.1, 0.1],
+        'META': [-0.1, -0.1, -0.1]
+    })
+    
+    z_scores = labeler.apply_z_score(residuals)
+    
+    # Assertions for each time step (row)
+    for i in range(len(z_scores)):
+        row = z_scores.iloc[i]
+        assert abs(row.mean()) < 1e-10
+        # Check std only if there is variation in the row
+        if row.std() > 0:
+            assert abs(row.std() - 1.0) < 1e-10
+
+def test_multi_ticker_pipeline():
+    """
+    RED: Test the full labeling pipeline: Forward Returns -> Batch Residualization -> Z-Scoring.
+    """
+    from research_lab.alpha_labeler import AlphaLabeler
+    labeler = AlphaLabeler()
+    
+    # 1. Mock forward returns for 3 tickers + 1 market proxy
+    dates = pd.date_range('2020-01-01', periods=10)
+    returns_df = pd.DataFrame({
+        'AAPL': np.random.normal(0, 0.01, 10),
+        'MSFT': np.random.normal(0, 0.01, 10),
+        'GOOG': np.random.normal(0, 0.01, 10),
+        'SPY': np.random.normal(0, 0.005, 10)
+    }, index=dates)
+    
+    # 2. Residualize each ticker against SPY
+    market_proxy = returns_df['SPY']
+    asset_returns = returns_df.drop(columns=['SPY'])
+    
+    residuals = labeler.residualize_universe(asset_returns, market_proxy)
+    
+    # 3. Z-Score
+    final_labels = labeler.apply_z_score(residuals)
+    
+    # Assertions
+    assert final_labels.shape == asset_returns.shape
+    assert abs(final_labels.iloc[0].mean()) < 1e-10
+    # Verify residuals are indeed idiosyncratic to SPY
+    for ticker in ['AAPL', 'MSFT', 'GOOG']:
+        corr = np.corrcoef(residuals[ticker], market_proxy)[0, 1]
+        assert abs(corr) < 1e-10
