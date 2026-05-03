@@ -2,9 +2,8 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 from research_lab.data_engine import DataEngine
-from research_lab.alpha_ranker import RankNet, PairwiseRankLoss
+from research_lab.alpha_ranker import RankNet
 import torch
-import torch.optim as optim
 
 class WFOEngine:
     """
@@ -19,17 +18,18 @@ class WFOEngine:
     def train_step(self, train_view: pd.DataFrame, target_labels: pd.DataFrame):
         """
         Trains a single RankNet instance on the provided PIT view.
+        Uses the high-level .fit() interface.
         """
-        # Placeholder for real feature generation logic
-        # In production, this would use AlphaCore to generate spectrograms
         input_dim = self.model_params['input_dim']
         model = RankNet(input_dim)
-        optimizer = optim.Adam(model.parameters(), lr=0.001)
-        criterion = PairwiseRankLoss()
         
-        # Simple training loop for demo
-        # Logic: Select pairs from cross-section
-        # (This will be deepened in actual factory implementation)
+        # Convert DataFrames to Tensors
+        X = torch.tensor(train_view.values).float()
+        y = torch.tensor(target_labels.values).float()
+        
+        # High-level training call
+        model.fit(X, y, epochs=self.model_params.get('epochs', 50))
+        
         return model.state_dict()
 
     def run_pipeline(self, start_date: datetime, end_date: datetime, step_days: int = 30):
