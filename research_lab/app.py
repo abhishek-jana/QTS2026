@@ -1,4 +1,9 @@
 import streamlit as st
+import sys
+import os
+# Ensure project root is in path
+sys.path.append(os.getcwd())
+
 import pandas as pd
 import numpy as np
 import plotly.express as px
