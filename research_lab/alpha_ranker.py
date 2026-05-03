@@ -82,9 +82,18 @@ class RankNet(nn.Module):
 
     @torch.jit.ignore
     def fit(self, dataset, epochs: int = 50, lr: float = 0.01):
+        """
+        High-level training interface.
+        Supports MultiModalBatch, TensorDataset, or (X, y) tuple.
+        """
         self.train()
         optimizer = optim.Adam(self.parameters(), lr=lr)
         criterion = PairwiseRankLoss()
+
+        # Handle (X, y) tuple
+        if isinstance(dataset, tuple) and len(dataset) == 2:
+            from torch.utils.data import TensorDataset
+            dataset = TensorDataset(*dataset)
 
         if hasattr(dataset, '__len__'):
             from torch.utils.data import DataLoader

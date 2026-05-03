@@ -17,8 +17,18 @@ class MultiModalBatch:
     tickers: List[str]
     times: List[datetime]
 
-    def __getitem__(self, key):
-        return self.data[key]
+    def __len__(self):
+        return len(self.labels)
+
+    def __getitem__(self, index):
+        if isinstance(index, str):
+            return self.data[index]
+        # Integer indexing for DataLoader compatibility
+        return {
+            'x_seq': self.data['x_seq'][index],
+            'x_spatial': self.data['x_spatial'][index],
+            'y': self.labels[index]
+        }
 
 class AlphaUniverse:
     """

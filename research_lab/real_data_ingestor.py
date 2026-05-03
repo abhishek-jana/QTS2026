@@ -22,6 +22,10 @@ class YFinanceIngestor:
             df = yf.download(ticker, start=start_date, end=end_date, progress=False)
             if df.empty:
                 continue
+            
+            # Flatten MultiIndex columns: ('Open', 'AAPL') -> 'Open'
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
                 
             df = df.reset_index()
             for _, row in df.iterrows():
