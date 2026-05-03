@@ -1,12 +1,12 @@
 import numpy as np
 import pandas as pd
-from scipy.signal import cwt, morlet2
+import pywt
 
 class FractionalDifferencer:
     """
     Implements Fractional Differentiation (Approach B: Expanding Window)
     to preserve memory while ensuring stationarity.
-    Formula: \Delta^d x_t = \sum_{k=0}^{\infty} \omega_k x_{t-k}
+    Formula: Delta^d x_t = sum_{k=0}^{\infty} omega_k x_{t-k}
     """
     def __init__(self, d: float, threshold: float = 1e-5):
         self.d = d
@@ -42,21 +42,22 @@ class WaveletFeatureGenerator:
     Generates Market Spectrograms using Continuous Wavelet Transform (CWT)
     with Morlet wavelets on Logarithmic/Dyadic scales.
     """
-    def __init__(self, scales: np.ndarray = None):
+    def __init__(self, scales: np.ndarray = None, wavelet: str = 'cmor1.5-1.0'):
         if scales is None:
             # Dyadic scales: 2^1 to 2^8 (capturing monthly/quarterly horizons)
             self.scales = 2 ** np.arange(1, 9)
         else:
             self.scales = scales
+        self.wavelet = wavelet
 
     def generate(self, series: pd.Series) -> np.ndarray:
         """
         Returns a spectrogram of shape (n_scales, n_timesteps).
         """
-        # Morlet wavelet: exp(-t^2/2) * cos(5t)
-        # Using scipy.signal.cwt
-        spectrogram = cwt(series.values, morlet2, self.scales)
-        return np.abs(spectrogram)
+        # Using PyWavelets for CWT
+        # pywt.cwt returns [coefficients, frequencies]
+        coefficients, _ = pywt.cwt(series.values, self.scales, self.wavelet)
+        return np.abs(coefficients)
 
 # Example usage for the notebook
 if __name__ == "__main__":
