@@ -36,7 +36,7 @@ graph TD
 ## 2. Key Capabilities
 - **Bi-temporal Isolation**: Strict separation of *Event Time* and *Knowledge Time*.
 - **Multi-Modal Fusion**: LSTM (Temporal Signal) + ViT (Spatial Signal) late fusion.
-- **Plugin Architecture**: Add new modalities (Sentiment, GNNs) as isolated plugins.
+- **TorchScript Serialization**: Models serialized via Tracing for cross-language consistency.
 - **Sub-100μs Muscle**: Native C++26 execution for theoretical alpha.
 
 ## 3. Setup & Execution

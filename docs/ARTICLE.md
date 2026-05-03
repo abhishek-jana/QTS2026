@@ -18,12 +18,12 @@ The foundation required absolute mathematical rigor to prevent data leakage and 
 ## 3. Phase 2: The Alpha Factory
 With the signal physics verified, we industrialized the training process.
 *   **RankNet LTR:** We implemented a Learning-to-Rank (LTR) neural network in PyTorch. Using a Pairwise RankNet loss, the model learns the relative cross-sectional ordering of the asset universe rather than absolute price predictions.
+*   **Multi-Modal Fusion:** The architecture evolved to a two-stream model: an LSTM for temporal sequences and a custom Vision Transformer (ViT) for spatial wavelet spectrograms, fused before the ranking head.
 *   **Walk-Forward Optimization (WFO):** A dynamic `WFOEngine` was built to step chronologically through history, retraining the model continuously while strictly honoring the Point-in-Time boundaries set by the `DataEngine`.
-*   **Bayesian Meta-Controller:** Alpha decays. To handle this, a meta-controller dynamically updates a "Model Validity" belief score using Bayesian logic, evaluating the Spearman correlation between model predictions and realized market returns.
 
 ## 4. Phase 3: The Execution Muscle
 Research alpha is theoretical until executed efficiently.
-*   **TorchScript Bridge:** The Python RankNet model is serialized via TorchScript, allowing the exact, trained computational graph to be loaded and executed natively in a high-performance environment.
+*   **TorchScript Bridge:** The Multi-Modal model is serialized via TorchScript Tracing, allowing the exact computational graph to be loaded and executed natively in a high-performance C++ environment.
 *   **C++26 Execution:** The final layer is written in modern C++26 to achieve sub-100μs latency.
 *   **MPC & Kelly Sizing:** The execution engine utilizes a Model Predictive Control (MPC) solver to navigate trades with minimal market impact. Final position sizes are scaled using the Kelly Criterion, strategically weighted by the Bayesian belief score.
 
