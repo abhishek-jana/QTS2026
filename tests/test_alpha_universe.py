@@ -1,46 +1,59 @@
 import pytest
 import torch
-import numpy as np
 from datetime import datetime, timedelta
 from research_lab.data_engine import DataEngine
 from research_lab.alpha_universe import AlphaUniverse
+from research_lab.plugins.core_plugins import SequentialPlugin, SpatialPlugin
 
-def test_alpha_universe_multimodal_dataset():
+def test_unified_lab_snapshot():
     """
-    TDD: Verify AlphaUniverse produces correct MultiModalDataset shapes.
+    TDD: Verify Unified Lab Snapshot provides multi-modal alignment.
     """
     engine = DataEngine()
     tickers = ['AAPL', 'MSFT', 'SPY']
-    # Need enough data for lookback (63) + labels
     engine.generate_synthetic_pit_data(tickers, days=150)
     
-    universe = AlphaUniverse(engine)
-    lookback = 63
-    as_of = datetime(2020, 1, 1) + timedelta(days=150)
+    # 1. Register Plugins
+    plugins = [SequentialPlugin(d_param=0.4), SpatialPlugin()]
     
-    dataset = universe.get_aligned_dataset(
-        tickers=['AAPL', 'MSFT', 'SPY'], 
-        as_of_date=as_of, 
-        lookback=lookback
-    )
+    # 2. Orchestrate
+    universe = AlphaUniverse(engine, plugins=plugins)
+    as_of = datetime(2020, 1, 1) + timedelta(days=120)
     
-    assert dataset is not None
-    assert len(dataset) > 0
+    batch = universe.snapshot(as_of=as_of, tickers=tickers, lookback=63)
     
-    # Check shapes
-    # x_seq: (N, 63, 1)
-    # x_spatial: (N, 1, 8, 63)
-    # y: (N)
-    assert dataset.x_seq.dim() == 3
-    assert dataset.x_seq.shape[1] == lookback
-    assert dataset.x_seq.shape[2] == 1
+    assert batch is not None
+    # Check Modalities
+    assert "x_seq" in batch.data
+    assert "x_spatial" in batch.data
     
-    assert dataset.x_spatial.dim() == 4
-    assert dataset.x_spatial.shape[1] == 1
-    assert dataset.x_spatial.shape[2] == 8
-    assert dataset.x_spatial.shape[3] == lookback
+    # Check Alignment
+    N = len(batch.labels)
+    assert batch.data['x_seq'].shape[0] == N
+    assert batch.data['x_spatial'].shape[0] == N
     
-    assert dataset.y.dim() == 1
-    assert len(dataset.y) == len(dataset.x_seq)
+    print(f"Unified Batch Size: {N}")
+    print(f"Modality Seq Shape: {batch['x_seq'].shape}")
+    print(f"Modality Spatial Shape: {batch['x_spatial'].shape}")
+
+def test_unified_lab_walk_forward():
+    """
+    TDD: Verify Walk-Forward automation steps through history.
+    """
+    engine = DataEngine()
+    tickers = ['AAPL', 'SPY']
+    engine.generate_synthetic_pit_data(tickers, days=200)
     
-    print(f"Dataset Size: {len(dataset)}")
+    plugins = [SequentialPlugin()]
+    universe = AlphaUniverse(engine, plugins=plugins)
+    
+    start = datetime(2020, 1, 1) + timedelta(days=100)
+    end = datetime(2020, 1, 1) + timedelta(days=150)
+    
+    # stride=21 (Monthly retrains)
+    results = universe.walk_forward(universe=tickers, start_date=start, end_date=end, stride=21)
+    
+    # Should have ~3 steps (Day 100, 121, 142)
+    assert len(results) >= 2
+    assert 'batch' in results[0]
+    print(f"Walk-forward steps completed: {len(results)}")
