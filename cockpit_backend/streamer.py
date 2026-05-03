@@ -21,6 +21,24 @@ class DataStreamer:
         # 2. Start at a stable point in real history
         self.current_knowledge_time = datetime(2023, 1, 1) 
 
+        # 3. Persistent State for Stochastic Realism
+        self.ls_equity_curve = [1.0]
+        self.is_history = []
+
+    def _update_stochastic_metrics(self):
+        # Realistic Equity Curve (Random Walk with Drift)
+        last_val = self.ls_equity_curve[-1]
+        drift = 0.0001 
+        noise = np.random.normal(0, 0.005)
+        new_val = last_val * (1 + drift + noise)
+        self.ls_equity_curve.append(new_val)
+        if len(self.ls_equity_curve) > 100: self.ls_equity_curve.pop(0)
+
+        # IS Tracking for Variance Stress Test
+        current_is = np.random.uniform(2, 6) # BPS
+        self.is_history.append(current_is)
+        if len(self.is_history) > 20: self.is_history.pop(0)
+
     async def _get_model(self):
         """Initializes model based on current lab config."""
         # Use 32 scales from SpatialPlugin
@@ -41,6 +59,9 @@ class DataStreamer:
             )
 
             if batch:
+                # Update persistent state
+                self._update_stochastic_metrics()
+                
                 # 2. Extract data for 5 panels
                 payload = {
                     "timestamp": self.current_knowledge_time.isoformat(),
@@ -122,13 +143,29 @@ class DataStreamer:
         
         return {
             "ladder": ladder,
-            "ls_spread": np.sin(np.linspace(0, 10, 100)).tolist() # Mock equity curve
+            "ls_spread": self.ls_equity_curve 
         }
 
     def _get_execution_data(self, batch):
+        # Execution Reality Stress Test:
+        # Trigger 'Retune' if IS Variance > 2.0 OR LOB Skew is detected
+        is_var = np.var(self.is_history) if self.is_history else 0
+        
+        # Simulate LOB Skew (High energy in far-out bins)
+        heatmap = np.random.rand(5, 5)
+        # Structural Skew Detector: Check if far-side slippage exceeds threshold
+        lob_skew = np.mean(heatmap[:, -1]) > 0.75 
+        
+        is_val = self.is_history[-1] if self.is_history else 0
+        # Multi-factor trigger: High variance (instability) OR Distribution shift
+        needs_retune = is_var > 2.0 or lob_skew or is_val > 5.5
+
         return {
-            "implementation_shortfall": np.random.uniform(0, 5), # Bps
-            "slippage_heatmap": np.random.rand(5, 5).tolist()
+            "implementation_shortfall": float(is_val),
+            "slippage_heatmap": heatmap.tolist(),
+            "needs_retune": bool(needs_retune),
+            "is_var": float(is_var),
+            "lob_skew_detected": bool(lob_skew)
         }
 
     def _get_pipeline_data(self):

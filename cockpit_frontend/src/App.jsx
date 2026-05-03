@@ -281,9 +281,12 @@ export default function MissionControl() {
             <div className="col-span-1 flex flex-col justify-center gap-2">
               <div className="text-[10px] text-slate-500 uppercase">Implementation Shortfall</div>
               <div className="text-2xl font-bold text-slate-100">{data.execution.implementation_shortfall.toFixed(2)} <span className="text-xs text-slate-600 font-normal">BPS</span></div>
-              <div className="text-[8px] text-red-500 flex items-center gap-1">
-                <AlertTriangle className="w-2 h-2" /> RL Agent needs retune
-              </div>
+              {data.execution.needs_retune && (
+                <div className="text-[8px] text-red-500 flex items-center gap-1 animate-pulse">
+                  <AlertTriangle className="w-2 h-2" /> RL Agent needs retune
+                </div>
+              )}
+              <div className="text-[8px] text-slate-500">IS VAR: {data.execution.is_var.toFixed(4)}</div>
             </div>
             <div className="col-span-2">
               <div className="text-[10px] text-slate-500 mb-2 uppercase text-center">Slippage Heatmap (Limit Order Book)</div>
