@@ -189,32 +189,30 @@ export default function MissionControl() {
         
         {/* 1. Spectral & Signal Viewer */}
         <Panel title="Spectral & Signal Viewer" icon={Activity} className="col-span-4 row-span-3">
-          <div className="flex flex-col gap-4 h-full">
-            <div className="h-1/2">
+          <div className="flex flex-col gap-2 h-full min-h-0">
+            <div className="basis-3/5 min-h-0 relative">
               <Heatmap data={data.spectral.cwt} title={`${data.spectral.ticker} Wavelet Spectrogram (Morlet)`} />
             </div>
-            <div className="grid grid-cols-2 gap-2">
-              <div className="bg-slate-800/50 p-2 border border-slate-700">
-                <div className="text-[10px] text-slate-500 uppercase">ADF p-value</div>
-                <div className={`text-xl font-bold ${data.spectral.adf_p_value < 0.05 ? 'text-emerald-500' : 'text-red-500 animate-pulse'}`}>
+            <div className="basis-1/5 grid grid-cols-2 gap-2 mt-2">
+              <div className="bg-slate-800/50 p-2 border border-slate-700 flex flex-col justify-center">
+                <div className="text-[10px] text-slate-500 uppercase tracking-tighter leading-none mb-1">ADF p-value</div>
+                <div className={`text-lg font-bold ${data.spectral.adf_p_value < 0.05 ? 'text-emerald-500' : 'text-red-500 animate-pulse'}`}>
                   {data.spectral.adf_p_value.toFixed(6)}
                 </div>
-                <div className="text-[8px] text-slate-600">STATIONARITY: {data.spectral.adf_p_value < 0.05 ? 'VERIFIED' : 'FAILED'}</div>
               </div>
-              <div className="bg-slate-800/50 p-2 border border-slate-700">
-                <div className="text-[10px] text-slate-500 uppercase">Active Modalities</div>
+              <div className="bg-slate-800/50 p-2 border border-slate-700 flex flex-col justify-center">
+                <div className="text-[10px] text-slate-500 uppercase tracking-tighter leading-none mb-1">Status</div>
                 <div className="flex gap-2 mt-1">
-                  <span className="bg-emerald-900/50 text-emerald-400 px-1 border border-emerald-800 text-[8px]">LSTM</span>
-                  <span className="bg-emerald-900/50 text-emerald-400 px-1 border border-emerald-800 text-[8px]">ViT</span>
+                  <span className="bg-emerald-900/30 text-emerald-400 px-1 border border-emerald-800 text-[8px] font-bold">STATIONARY</span>
                 </div>
               </div>
             </div>
-            <div className="flex-1 h-32 mt-2">
-              <div className="text-[10px] text-slate-500 mb-2 uppercase">Feature SHAP Stream</div>
+            <div className="basis-1/5 min-h-0 mt-1">
+              <div className="text-[9px] text-slate-500 mb-1 uppercase tracking-widest opacity-50">Feature Importance</div>
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={Object.entries(data.spectral.shap_values).map(([name, val]) => ({ name, val }))} layout="vertical">
                   <XAxis type="number" hide domain={[0, 1]} />
-                  <YAxis dataKey="name" type="category" width={70} tick={{ fontSize: 8, fill: '#94a3b8' }} />
+                  <YAxis dataKey="name" type="category" width={60} tick={{ fontSize: 7, fill: '#64748b' }} />
                   <Bar dataKey="val" fill="#10b981" />
                 </BarChart>
               </ResponsiveContainer>
