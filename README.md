@@ -84,10 +84,29 @@ g++ -std=c++2b main.cpp -o muscle
 ./muscle
 ```
 
+### **G. Mission Control: High-Density UI**
+Launch the professional cockpit for live signal monitoring.
+
+**1. Start Backend (FastAPI + WebSockets)**
+```bash
+# From project root
+uv run python cockpit_backend/main.py
+```
+
+**2. Start Frontend (React + Vite)**
+```bash
+cd cockpit_frontend
+npm install
+npm run dev
+```
+Navigate to `http://localhost:5173` to view the high-density cockpit.
+
 ## 4. Directory Structure
 - `/research_lab`: Alpha orchestrator, core math, and discovery notebooks.
 - `/alpha_factory`: Retraining pipelines and Bayesian meta-controller.
 - `/execution_muscle`: C++26 high-performance execution headers and bridge.
+- `/cockpit_backend`: FastAPI WebSocket streamer for live UI data.
+- `/cockpit_frontend`: React/Tailwind high-density Mission Control.
 - `/tests`: Comprehensive TDD regression suite.
 - `/docs`: Execution summary and articles.
 
