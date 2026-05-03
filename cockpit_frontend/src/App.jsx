@@ -39,38 +39,94 @@ const Panel = ({ title, icon: Icon, children, className = "" }) => (
 );
 
 const Heatmap = ({ data, title }) => {
-  if (!data) return null;
-  
-  // Find max for normalization
-  const maxVal = Math.max(...data.flat());
-  
+  const canvasRef = useRef(null);
+
+  useEffect(() => {
+    if (!data || !canvasRef.current) return;
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext('2d');
+    const rows = data.length;
+    const cols = data[0].length;
+    
+    // Scale canvas to parent
+    canvas.width = cols;
+    canvas.height = rows;
+    
+    const imageData = ctx.createImageData(cols, rows);
+    const maxVal = Math.max(...data.flat(), 0.001);
+
+    for (let i = 0; i < rows; i++) {
+      for (let j = 0; j < cols; j++) {
+        const val = data[i][j];
+        const ratio = val / maxVal;
+        const idx = (i * cols + j) * 4;
+
+        // Inferno-ish colormap approximation
+        imageData.data[idx] = Math.min(255, ratio * 512); // Red
+        imageData.data[idx + 1] = Math.min(255, Math.max(0, (ratio - 0.3) * 512)); // Green
+        imageData.data[idx + 2] = Math.min(255, Math.max(0, (ratio - 0.7) * 512)); // Blue
+        imageData.data[idx + 3] = 255; // Alpha
+      }
+    }
+    ctx.putImageData(imageData, 0, 0);
+  }, [data]);
+
   return (
     <div className="w-full h-full flex flex-col">
-      <div className="text-[10px] font-mono text-slate-500 mb-1">{title}</div>
-      <div className="flex-1 grid grid-cols-64 gap-[1px]">
-        {data.map((row, i) => (
-          row.map((val, j) => {
-            // Map magnitude to intensity
-            // 0 -> black/dark, mid -> orange, high -> yellow/red
-            const ratio = maxVal > 0 ? val / maxVal : 0;
-            
-            // Thermal Scale mapping (roughly black -> blue -> orange -> yellow -> white)
-            let color;
-            if (ratio < 0.25) color = `rgb(0, 0, ${Math.floor(ratio * 4 * 255)})`;
-            else if (ratio < 0.5) color = `rgb(0, ${Math.floor((ratio - 0.25) * 4 * 255)}, 255)`;
-            else if (ratio < 0.75) color = `rgb(${Math.floor((ratio - 0.5) * 4 * 255)}, 255, ${Math.floor((1 - ratio) * 4 * 255)})`;
-            else color = `rgb(255, ${Math.floor((1 - ratio) * 4 * 255)}, 0)`; // Red-Hot for high intensity
-            
-            return (
-              <div 
-                key={`${i}-${j}`} 
-                className="w-full h-[2px]" 
-                style={{ backgroundColor: color }}
-              />
-            );
-          })
-        ))}
-      </div>
+      <div className="text-[10px] font-mono text-slate-500 mb-1 tracking-tighter">{title}</div>
+      <canvas 
+        ref={canvasRef} 
+        className="flex-1 w-full image-pixelated border border-slate-800 shadow-[0_0_10px_rgba(0,0,0,0.5)]" 
+        style={{ imageRendering: 'pixelated' }}
+      />
+    </div>
+  );
+};
+
+const RankingGrid = ({ ladder }) => {
+  // Fix 2: Unique-ify the list. One entry per ticker, highest score.
+  const aggregated = React.useMemo(() => {
+    const map = {};
+    ladder.forEach(item => {
+      if (!map[item.ticker] || item.score > map[item.ticker]) {
+        map[item.ticker] = item.score;
+      }
+    });
+    return Object.entries(map)
+      .map(([ticker, score]) => ({ ticker, score }))
+      .sort((a, b) => b.score - a.score);
+  }, [ladder]);
+
+  return (
+    <div className="flex-1 overflow-y-auto no-scrollbar pr-2">
+      <div className="text-[10px] font-bold text-emerald-500/80 mb-2 uppercase border-b border-emerald-900/30 pb-1">Decile Ladder (House View)</div>
+      <table className="w-full text-[10px] border-collapse">
+        <thead className="sticky top-0 bg-slate-900 shadow-sm">
+          <tr>
+            <th className="text-left py-2 text-slate-500 uppercase font-normal">Ticker</th>
+            <th className="text-right py-2 text-slate-500 uppercase font-normal pr-4">Z-Score</th>
+            <th className="text-right py-2 text-slate-500 uppercase font-normal">Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          {aggregated.map((row, i) => (
+            <tr key={row.ticker} className="border-b border-slate-800/40 group hover:bg-emerald-500/5 transition-colors">
+              <td className="py-2.5 flex items-center gap-2">
+                <div className={`w-1 h-3 ${row.score > 0 ? 'bg-emerald-500' : 'bg-red-500'} shadow-sm`} />
+                <span className="font-bold text-slate-200 tracking-tight">{row.ticker}</span>
+              </td>
+              <td className={`text-right py-2.5 font-mono ${row.score > 0 ? 'text-emerald-400' : 'text-red-400'} pr-4`}>
+                {row.score.toFixed(4)}
+              </td>
+              <td className="text-right py-2.5">
+                <span className={`text-[8px] px-1 border ${row.score > 0 ? 'border-emerald-800 text-emerald-600' : 'border-red-900 text-red-700'} uppercase font-bold`}>
+                  {row.score > 0 ? 'Long' : 'Short'}
+                </span>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 };
@@ -203,32 +259,7 @@ export default function MissionControl() {
         {/* 3. Cross-Sectional Ranking Grid */}
         <Panel title="Ranking Grid" icon={TrendingUp} className="col-span-4 row-span-6">
           <div className="flex flex-col h-full">
-            <div className="flex-1 overflow-y-auto no-scrollbar pr-2">
-              <div className="text-[10px] text-slate-500 mb-2 uppercase">Decile Ladder</div>
-              <table className="w-full text-[10px]">
-                <thead className="sticky top-0 bg-slate-900 border-b border-slate-800">
-                  <tr>
-                    <th className="text-left py-1 text-slate-500 uppercase">Ticker</th>
-                    <th className="text-right py-1 text-slate-500 uppercase">Z-Score</th>
-                    <th className="text-right py-1 text-slate-500 uppercase">Style</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.rankings.ladder.map((row, i) => (
-                    <tr key={row.ticker} className="border-b border-slate-800/50 group hover:bg-slate-800/30">
-                      <td className="py-2 flex items-center gap-2">
-                        <div className={`w-1 h-4 ${row.score > 0 ? 'bg-emerald-500' : 'bg-red-500'}`} />
-                        <span className="font-bold text-slate-200">{row.ticker}</span>
-                      </td>
-                      <td className={`text-right py-2 ${row.score > 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                        {row.score.toFixed(4)}
-                      </td>
-                      <td className="text-right text-slate-600">ALPHA_V1</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <RankingGrid ladder={data.rankings.ladder} />
             
             <div className="h-40 border-t border-slate-800 pt-4 mt-4">
               <div className="text-[10px] text-slate-500 mb-2 uppercase">L/S Equity Spread View</div>
