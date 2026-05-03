@@ -8,6 +8,8 @@ from research_lab.plugins.core_plugins import SequentialPlugin, SpatialPlugin
 from research_lab.real_data_ingestor import YFinanceIngestor
 from scipy.stats import spearmanr
 
+current_date = datetime.now().strftime('%Y-%m-%d')
+
 class BacktestOrchestrator:
     """
     Executes and compares 'Champion' vs 'Challenger' models on real data.
@@ -20,7 +22,7 @@ class BacktestOrchestrator:
         
         ingestor = YFinanceIngestor(self.universe.engine)
         # 4-year window for Training + OOS Evaluation
-        ingestor.ingest_universe(self.tickers, '2022-01-01', '2026-05-03')
+        ingestor.ingest_universe(self.tickers, '2022-01-01', current_date)
 
     def run_comparison(self, train_start: datetime, train_end: datetime, test_start: datetime, test_end: datetime):
         """

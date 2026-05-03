@@ -39,12 +39,14 @@ class SequentialPlugin(ModalityPlugin):
         return torch.tensor(np.array(windows)).float()
 
 class SpatialPlugin(ModalityPlugin):
-    """ViT Stream: 2D Wavelet Spectrograms."""
+    """ViT Stream: 2D Wavelet Spectrograms with High Density Scales."""
     def __init__(self, scales: np.ndarray = None):
         from research_lab.alpha_core import WaveletFeatureGenerator
         from research_lab.alpha_core import FractionalDifferencer
-        self.fd = FractionalDifferencer(d=0.4) # Shared physics
-        self.wfg = WaveletFeatureGenerator(scales=scales)
+        self.fd = FractionalDifferencer(d=0.4) 
+        # Increase density: 32 scales to provide a "Signal Energy" view
+        self.scales = scales if scales is not None else np.geomspace(2, 256, 32)
+        self.wfg = WaveletFeatureGenerator(scales=self.scales)
         self._name = "x_spatial"
 
     @property

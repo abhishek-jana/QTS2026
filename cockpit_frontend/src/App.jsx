@@ -48,37 +48,40 @@ const Heatmap = ({ data, title }) => {
     const rows = data.length;
     const cols = data[0].length;
     
-    // Scale canvas to parent
+    // DRAW resolution
     canvas.width = cols;
     canvas.height = rows;
     
     const imageData = ctx.createImageData(cols, rows);
-    const maxVal = Math.max(...data.flat(), 0.001);
+    const flatData = data.flat();
+    const maxVal = Math.max(...flatData.slice(0, 5000), 0.001);
 
     for (let i = 0; i < rows; i++) {
       for (let j = 0; j < cols; j++) {
         const val = data[i][j];
-        const ratio = val / maxVal;
+        const ratio = Math.min(1.0, val / maxVal);
         const idx = (i * cols + j) * 4;
 
-        // Inferno-ish colormap approximation
-        imageData.data[idx] = Math.min(255, ratio * 512); // Red
-        imageData.data[idx + 1] = Math.min(255, Math.max(0, (ratio - 0.3) * 512)); // Green
-        imageData.data[idx + 2] = Math.min(255, Math.max(0, (ratio - 0.7) * 512)); // Blue
-        imageData.data[idx + 3] = 255; // Alpha
+        // Inferno
+        imageData.data[idx] = Math.min(255, ratio * 400); 
+        imageData.data[idx + 1] = Math.max(0, (ratio - 0.3) * 500); 
+        imageData.data[idx + 2] = Math.max(0, (ratio - 0.6) * 600); 
+        imageData.data[idx + 3] = 255; 
       }
     }
     ctx.putImageData(imageData, 0, 0);
   }, [data]);
 
   return (
-    <div className="w-full h-full flex flex-col">
-      <div className="text-[10px] font-mono text-slate-500 mb-1 tracking-tighter">{title}</div>
-      <canvas 
-        ref={canvasRef} 
-        className="flex-1 w-full image-pixelated border border-slate-800 shadow-[0_0_10px_rgba(0,0,0,0.5)]" 
-        style={{ imageRendering: 'pixelated' }}
-      />
+    <div className="w-full h-full flex flex-col min-h-0">
+      <div className="text-[10px] font-mono text-slate-500 mb-1 tracking-tighter truncate">{title}</div>
+      <div className="flex-1 min-h-0 relative border border-slate-800 bg-black">
+        <canvas 
+          ref={canvasRef} 
+          className="absolute inset-0 w-full h-full" 
+          style={{ imageRendering: 'pixelated' }}
+        />
+      </div>
     </div>
   );
 };
