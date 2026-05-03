@@ -40,18 +40,32 @@ const Panel = ({ title, icon: Icon, children, className = "" }) => (
 
 const Heatmap = ({ data, title }) => {
   if (!data) return null;
+  
+  // Find max for normalization
+  const maxVal = Math.max(...data.flat());
+  
   return (
     <div className="w-full h-full flex flex-col">
       <div className="text-[10px] font-mono text-slate-500 mb-1">{title}</div>
       <div className="flex-1 grid grid-cols-64 gap-[1px]">
         {data.map((row, i) => (
           row.map((val, j) => {
-            const intensity = Math.min(255, Math.floor(val * 255));
+            // Map magnitude to intensity
+            // 0 -> black/dark, mid -> orange, high -> yellow/red
+            const ratio = maxVal > 0 ? val / maxVal : 0;
+            
+            // Thermal Scale mapping (roughly black -> blue -> orange -> yellow -> white)
+            let color;
+            if (ratio < 0.25) color = `rgb(0, 0, ${Math.floor(ratio * 4 * 255)})`;
+            else if (ratio < 0.5) color = `rgb(0, ${Math.floor((ratio - 0.25) * 4 * 255)}, 255)`;
+            else if (ratio < 0.75) color = `rgb(${Math.floor((ratio - 0.5) * 4 * 255)}, 255, ${Math.floor((1 - ratio) * 4 * 255)})`;
+            else color = `rgb(255, ${Math.floor((1 - ratio) * 4 * 255)}, 0)`; // Red-Hot for high intensity
+            
             return (
               <div 
                 key={`${i}-${j}`} 
                 className="w-full h-[2px]" 
-                style={{ backgroundColor: `rgb(${intensity}, ${intensity/2}, ${255-intensity})` }}
+                style={{ backgroundColor: color }}
               />
             );
           })

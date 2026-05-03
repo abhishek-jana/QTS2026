@@ -89,14 +89,26 @@ class DataStreamer:
         }
 
     def _get_ranking_data(self, batch):
-        # Decile ladder logic
-        sorted_indices = np.argsort(batch.labels.numpy())[::-1]
+        """
+        Aggregates per-ticker scores into a single 'House View' decile ladder.
+        Ensures each ticker appears only once.
+        """
+        # Create unique 'House View' per ticker
+        ticker_scores = {}
+        for i, ticker in enumerate(batch.tickers):
+            # Take the latest score for each ticker in the batch
+            ticker_scores[ticker] = float(batch.labels[i])
+            
+        # Convert to list of dicts for the UI
         ladder = []
-        for i in sorted_indices:
+        for ticker, score in ticker_scores.items():
             ladder.append({
-                "ticker": batch.tickers[i],
-                "score": float(batch.labels[i])
+                "ticker": ticker,
+                "score": score
             })
+            
+        # Sort by score descending (Top 10% Longs first)
+        ladder.sort(key=lambda x: x['score'], reverse=True)
         
         return {
             "ladder": ladder,
