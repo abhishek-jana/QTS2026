@@ -1,26 +1,95 @@
 # UQTS-2026 (Unified Quant Training System)
 
-## Overview
-UQTS-2026 is a high-performance, self-evolving Long-Short Equity ranking platform based on the **"Signal vs. Fluid"** framework. It treats market data as a non-stationary signal requiring multi-resolution analysis.
+## 0. Project Philosophy: "Signal vs. Fluid"
+UQTS-2026 is a high-performance Long-Short Equity ranking platform. It treats market data as a non-stationary fluid requiring multi-resolution analysis (Wavelets) and memory preservation (Fractional Calculus).
 
-## Project Structure
-- `/research_lab`: Signal discovery and alpha validation (Jupyter/Python).
-- `/alpha_factory`: Industrialization and production-ready pipelines.
-- `/execution_muscle`: Ultra-low latency C++26 execution wrapper.
+## 1. System Architecture
+The system follows a strict 3-tier evolution, synthesized into a **"Unified Lab"** orchestrator.
 
-## Key Features
-- **Bi-temporal Data Engine**: Strict separation of Event Time and Knowledge Time to eliminate look-ahead bias.
-- **Fractional Differentiation**: Preservation of memory while ensuring stationarity ($d \approx 0.4$).
-- **Wavelet Spectrograms**: Multi-resolution analysis using Morlet wavelets on dyadic scales.
-- **RankNet (LTR)**: Cross-sectional ranking of idiosyncratic alpha.
+```mermaid
+graph TD
+    subgraph "Data Tier (PIT)"
+        DB[(QuestDB/DuckDB)] --> DE[DataEngine]
+    end
 
-## Setup
-Ensure you have `uv` installed.
+    subgraph "Research Lab (Unified Orchestrator)"
+        DE --> AU[AlphaUniverse]
+        P1[SequentialPlugin - LSTM] --> AU
+        P2[SpatialPlugin - ViT] --> AU
+        AU --> SN[Snapshot Interface]
+        AU --> WF[Walk-Forward Interface]
+    end
+
+    subgraph "Alpha Factory (Training)"
+        SN --> RN[MultiModalRankNet]
+        WF --> Retrain[Retraining Loop]
+        RN --> BC[Bayesian Meta-Controller]
+    end
+
+    subgraph "Execution Muscle (C++26)"
+        RN -- TorchScript --> C++[LibTorch Wrapper]
+        C++ --> MPC[MPC Solver]
+        MPC --> Kelly[Kelly Position Sizer]
+    end
+```
+
+## 2. Key Capabilities
+- **Bi-temporal Isolation**: Strict separation of *Event Time* and *Knowledge Time*.
+- **Multi-Modal Fusion**: LSTM (Temporal Signal) + ViT (Spatial Signal) late fusion.
+- **Plugin Architecture**: Add new modalities (Sentiment, GNNs) as isolated plugins.
+- **Sub-100μs Muscle**: Native C++26 execution for theoretical alpha.
+
+## 3. Setup & Execution
+
+### **A. Prerequisites**
+- `uv` (Fast Python package manager)
+- `g++` (Supporting C++2b/26)
+- `cmake`
+
+### **B. Environment Initialization**
 ```bash
+cd UQTS-2026
 uv sync
 ```
 
-## Running Tests
+### **C. Research: Alpha Discovery**
+Visualize the signal physics and multi-modal windows.
+```bash
+uv run jupyter lab research_lab/alpha_discovery.ipynb
+```
+*   **Snapshot Test**: See how `universe.snapshot()` generates aligned tensors in one call.
+*   **Spectrograms**: Inspect the Morlet wavelet scales.
+
+### **D. Validation: Test Suite**
+Ensure mathematical and architectural integrity.
 ```bash
 uv run pytest
 ```
+*   `tests/test_data_engine.py`: PIT Isolation & Correction logic.
+*   `tests/test_alpha_universe.py`: Plugin alignment & Multi-modal shapes.
+*   `tests/test_alpha_ranker.py`: RankNet convergence verification.
+*   `tests/test_meta_controller.py`: Bayesian belief decay/growth.
+
+### **E. Industrialization: RETRAIN Loop**
+Verify signal physics (ADF tests) and retrain pipeline.
+```bash
+uv run python -m research_lab.verify_physics
+```
+
+### **F. Production: Execution Muscle**
+Compile and run the high-performance C++ trade sizer.
+```bash
+cd execution_muscle
+g++ -std=c++2b main.cpp -o muscle
+./muscle
+```
+
+## 4. Directory Structure
+- `/research_lab`: Alpha orchestrator, core math, and discovery notebooks.
+- `/alpha_factory`: Retraining pipelines and Bayesian meta-controller.
+- `/execution_muscle`: C++26 high-performance execution headers and bridge.
+- `/tests`: Comprehensive TDD regression suite.
+- `/docs`: Execution summary and articles.
+
+---
+**Signal vs. Fluid logic: ENGAGED.**
