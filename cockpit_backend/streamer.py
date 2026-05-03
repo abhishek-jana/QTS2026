@@ -11,8 +11,10 @@ class DataStreamer:
         self.manager = manager
         self.tickers = ["AAPL", "MSFT", "GOOG", "SPY"]
         self.lab = AlphaUniverse(plugins=[SequentialPlugin(), SpatialPlugin()])
-        self.lab.engine.generate_synthetic_pit_data(self.tickers, days=500)
-        self.current_knowledge_time = datetime(2020, 9, 7)
+        # Generate enough history
+        self.lab.engine.generate_synthetic_pit_data(self.tickers, days=600)
+        # Start at a date where we have enough lookback (63) and forward horizon (21)
+        self.current_knowledge_time = datetime(2020, 5, 1) 
 
     async def start_streaming(self):
         """Simulates live market ticks and broadcasts to UI."""
