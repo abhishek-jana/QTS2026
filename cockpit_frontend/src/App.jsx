@@ -278,18 +278,25 @@ export default function MissionControl() {
         {/* 3. Cross-Sectional Ranking Grid */}
         <Panel title="Ranking Grid" icon={TrendingUp} className="col-span-4 h-fit">
           <div className="flex flex-col gap-4">
-            <div className="h-[500px]">
+            <div className="h-[450px] flex flex-col">
                <RankingGrid ladder={data.rankings.ladder} onSelectTicker={handleSelectTicker} />
             </div>
             
-            <div className="h-64 border-t border-slate-800 pt-6 mt-4">
+            <div className="h-72 border-t border-slate-800 pt-6 mt-4">
               <div className="text-[10px] text-slate-500 mb-2 uppercase font-bold tracking-widest">L/S Equity Spread (Cumulative Return %)</div>
               <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={data.rankings.ls_spread.map((val, i) => ({ i, val }))}>
+                <LineChart 
+                  data={data.rankings.ls_spread.map((val, i) => ({ i, val }))}
+                  margin={{ left: 20, right: 10, top: 10, bottom: 20 }}
+                >
                   <Line type="stepAfter" dataKey="val" stroke="#10b981" dot={false} strokeWidth={3} />
                   <CartesianGrid stroke="#1e293b" vertical={false} strokeDasharray="3 3" />
                   <XAxis hide />
-                  <YAxis stroke="#475569" fontSize={10} label={{ value: 'Perf %', angle: -90, position: 'insideLeft', fill: '#475569' }} />
+                  <YAxis 
+                    stroke="#475569" 
+                    fontSize={10} 
+                    label={{ value: 'Perf %', angle: -90, position: 'insideLeft', offset: -10, fill: '#475569' }} 
+                  />
                 </LineChart>
               </ResponsiveContainer>
             </div>
