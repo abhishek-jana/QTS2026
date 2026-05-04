@@ -96,11 +96,18 @@ class BacktestOrchestrator:
 
 if __name__ == "__main__":
     orchestrator = BacktestOrchestrator()
-    # 2022 to Previous Year Training
-    last_year = datetime.now().year - 1
-    train_start = datetime(2022, 1, 1)
-    train_end = datetime(last_year, 12, 31)
-    # Current Year Out-of-Sample Evaluation
-    test_start = datetime(datetime.now().year, 1, 1)
+    
+    # --- Institutional Timeline Alignment ---
+    # 2016-01-01 to 2017-12-31: Fractional Diff "Burn-in" (Automatic via Ingestor)
+    
+    # 1. Training Regime: 2018 to 2022 (Captures Volmageddon, COVID, and Rate Hikes)
+    train_start = datetime(2018, 1, 1)
+    train_end = datetime(2022, 12, 31)
+    
+    # 2. Walk-Forward Evaluation: 2023 to Present (Out-of-Sample Trial)
+    test_start = datetime(2023, 1, 1)
     test_end = datetime.now()
+    
+    print(f"🚀 INITIATING MULTI-REGIME PRODUCTION TRIAL")
+    print(f"BURNOUT/STABILITY PHASE: 2016-2018")
     orchestrator.run_comparison(train_start, train_end, test_start, test_end)

@@ -1,14 +1,14 @@
 # UQTS-2026 Global Configuration
 
 universe:
-  tickers: ["AAPL", "MSFT", "GOOG", "SPY", "AMZN", "NFLX", "META", "NVDA"]
+  tickers: ["SPY", "NVDA", "TSM", "AAPL", "MSFT", "GOOG", "AMZN", "WMT", "COST", "UPS", "JPM", "GS", "V", "XOM", "CVX", "CAT", "TSLA", "META", "UNH", "LLY"]
   benchmark: "SPY"
 
 research:
   lookback_days: 63
   horizon_days: 21
   fd_d_param: 0.4
-  start_date: "2022-01-01"
+  start_date: "2016-01-01"
 
 model:
   hidden_dim: 64

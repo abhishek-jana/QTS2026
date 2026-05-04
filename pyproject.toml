@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "alpaca-trade-api>=0.48",
+    "alpha-vantage<3.0.0",
     "einops>=0.8.2",
     "fastapi>=0.136.1",
     "matplotlib>=3.10.9",
