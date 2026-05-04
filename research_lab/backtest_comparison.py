@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 import pandas as pd
+import yaml
 from datetime import datetime, timedelta
 from research_lab.alpha_universe import AlphaUniverse
 from research_lab.alpha_ranker import RankNet, MultiModalRankNet
@@ -8,21 +9,30 @@ from research_lab.plugins.core_plugins import SequentialPlugin, SpatialPlugin
 from research_lab.real_data_ingestor import YFinanceIngestor
 from scipy.stats import spearmanr
 
-current_date = datetime.now().strftime('%Y-%m-%d')
-
 class BacktestOrchestrator:
     """
     Executes and compares 'Champion' vs 'Challenger' models on real data.
     """
     def __init__(self):
-        # 1. Setup Universe with Expanded tech basket
-        self.tickers = ['AAPL', 'MSFT', 'GOOG', 'SPY', 'AMZN', 'NFLX', 'META', 'NVDA']
-        self.plugins = [SequentialPlugin(), SpatialPlugin()]
+        # 0. Load Configuration
+        with open("config.yaml", "r") as f:
+            self.config = yaml.safe_load(f)
+
+        # 1. Setup Universe with Config Tickers
+        self.tickers = self.config['universe']['tickers']
+        self.plugins = [
+            SequentialPlugin(d_param=self.config['research']['fd_d_param']), 
+            SpatialPlugin()
+        ]
         self.universe = AlphaUniverse(plugins=self.plugins)
         
+        # Determine number of scales from SpatialPlugin
+        self.n_scales = len(self.plugins[1].scales)
+        
         ingestor = YFinanceIngestor(self.universe.engine)
-        # 4-year window for Training + OOS Evaluation
-        ingestor.ingest_universe(self.tickers, '2022-01-01', current_date)
+        # Dynamic window from config start_date to today
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        ingestor.ingest_universe(self.tickers, self.config['research']['start_date'], today_str)
 
     def run_comparison(self, train_start: datetime, train_end: datetime, test_start: datetime, test_end: datetime):
         """
@@ -32,12 +42,12 @@ class BacktestOrchestrator:
         print(f"TRAIN: {train_start.date()} -> {train_end.date()}")
         print(f"TEST:  {test_start.date()} -> {test_end.date()}")
         
-        # 1. Initialize Models
-        champion = RankNet(input_dim=8)
-        challenger = MultiModalRankNet(scales=8, lookback=63)
+        # 1. Initialize Models using actual scale count
+        champion = RankNet(input_dim=self.n_scales)
+        challenger = MultiModalRankNet(scales=self.n_scales, lookback=63)
         
         # 2. TRAINING PHASE (In-Sample)
-        print("🛠️ Training Models on historical regime...")
+        print(f"🛠️ Training Models on {len(self.tickers)} tickers...")
         train_batch = self.universe.snapshot(as_of=train_end, tickers=self.tickers, lookback=63)
         if train_batch:
             # Train Champion (MLP)
