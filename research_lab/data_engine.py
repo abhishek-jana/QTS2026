@@ -80,7 +80,7 @@ class DataEngine:
         # We sort by knowledge_time descending to get the most recent 'truth'
         pit_view = visible_data.sort_values('knowledge_time', ascending=False).drop_duplicates('event_time')
         
-        return pit_view.sort_values('event_time')
+        return pit_view.sort_values('event_time').set_index('event_time')
 
 if __name__ == "__main__":
     engine = DataEngine()

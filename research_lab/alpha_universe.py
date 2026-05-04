@@ -72,7 +72,7 @@ class AlphaUniverse:
             # Align: Plugins return (N, ...) where N = len(view) - lookback + 1
             # These correspond to event_times from index [lookback-1:]
             for i, t_idx in enumerate(range(lookback - 1, len(view))):
-                event_time = view.iloc[t_idx]['event_time']
+                event_time = view.index[t_idx]
                 
                 if event_time not in ticker_labels.index: continue
                 

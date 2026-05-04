@@ -55,8 +55,11 @@ class AlphaLabeler:
         Generates forward log-returns for multiple tickers.
         Returns a DataFrame indexed by event_time with tickers as columns.
         """
+        # Ensure event_time is a column for pivoting if it's currently the index
+        df = pit_view.reset_index() if 'event_time' not in pit_view.columns else pit_view
+        
         # Pivot to get a wide format: rows=event_time, cols=tickers
-        wide_price = pit_view.pivot(index='event_time', columns=ticker_col, values='close')
+        wide_price = df.pivot(index='event_time', columns=ticker_col, values='close')
         
         # Calculate forward log-returns: ln(P_{t+N} / P_t)
         forward_returns = np.log(wide_price.shift(-horizon) / wide_price)

@@ -1,7 +1,8 @@
 import torch
 import torch.optim as optim
+from datetime import datetime
 from research_lab.alpha_ranker import MultiModalRankNet, PairwiseRankLoss
-from research_lab.alpha_universe import MultiModalDataset
+from research_lab.alpha_universe import MultiModalBatch
 
 def test_multimodal_ranknet_convergence():
     """
@@ -22,7 +23,12 @@ def test_multimodal_ranknet_convergence():
     # Strong linear signal
     y = x_seq.mean(dim=1).squeeze() * 10
     
-    dataset = MultiModalDataset(x_seq, x_spatial, y)
+    dataset = MultiModalBatch(
+        data={'x_seq': x_seq, 'x_spatial': x_spatial},
+        labels=y,
+        tickers=['TEST'] * n_samples,
+        times=[datetime.now()] * n_samples
+    )
     
     # Train: Smaller LR, more steps
     model.fit(dataset, epochs=20, lr=0.001)
