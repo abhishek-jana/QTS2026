@@ -27,16 +27,17 @@ import {
 // --- Components ---
 
 const Panel = ({ title, icon: Icon, children, className = "" }) => (
-  <div className={`bg-slate-900 border border-slate-700 p-4 flex flex-col h-full overflow-hidden ${className}`}>
+  <div className={`bg-slate-900 border border-slate-700 p-4 flex flex-col h-fit ${className}`}>
     <div className="flex-none flex items-center gap-2 mb-4 border-b border-slate-800 pb-2">
       <Icon className="w-4 h-4 text-emerald-500" />
       <h2 className="text-xs font-mono uppercase tracking-widest text-slate-300 font-bold">{title}</h2>
     </div>
-    <div className="flex-1 min-h-0">
+    <div className="flex-1">
       {children}
     </div>
   </div>
 );
+
 
 const Heatmap = ({ data, title }) => {
   const canvasRef = useRef(null);
@@ -165,7 +166,7 @@ export default function MissionControl() {
   );
 
   return (
-    <div className="min-h-screen w-full bg-black text-slate-300 font-mono text-xs flex flex-col p-2 gap-2 overflow-y-auto">
+    <div className="min-h-screen w-full bg-black text-slate-300 font-mono text-xs flex flex-col p-2 gap-2">
       {/* Header */}
       <div className="flex-none h-16 flex justify-between items-center border-b border-slate-800 pb-2">
         <div className="flex items-center gap-4">
