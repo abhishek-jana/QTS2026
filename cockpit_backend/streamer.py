@@ -12,13 +12,14 @@ class DataStreamer:
         self.manager = manager
         self.tickers = ["AAPL", "MSFT", "GOOG", "SPY", "AMZN", "NFLX", "META", "NVDA"]
         self.lab = AlphaUniverse(plugins=[SequentialPlugin(), SpatialPlugin()])
-
-        # 1. Ingest Real Data (Up to current date 2026)
+        
+        # 1. Ingest Real Data (Dynamic up to today)
+        today_str = datetime.now().strftime("%Y-%m-%d")
         ingestor = YFinanceIngestor(self.lab.engine)
-        ingestor.ingest_universe(self.tickers, "2022-01-01", "2026-05-03")
-
-        # 2. Start at the edge of the recent regime
-        self.current_knowledge_time = datetime(2026, 1, 1) 
+        ingestor.ingest_universe(self.tickers, "2022-01-01", today_str)
+        
+        # 2. Start live clock 6 months before today for demo history
+        self.current_knowledge_time = datetime.now() - timedelta(days=120) 
  
 
         # 3. Persistent State for Stochastic Realism

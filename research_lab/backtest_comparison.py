@@ -96,10 +96,11 @@ class BacktestOrchestrator:
 
 if __name__ == "__main__":
     orchestrator = BacktestOrchestrator()
-    # 2022-2025 Training
+    # 2022 to Previous Year Training
+    last_year = datetime.now().year - 1
     train_start = datetime(2022, 1, 1)
-    train_end = datetime(2025, 12, 31)
-    # 2026 Out-of-Sample Evaluation
-    test_start = datetime(2026, 1, 1)
-    test_end = datetime(2026, 5, 3)
+    train_end = datetime(last_year, 12, 31)
+    # Current Year Out-of-Sample Evaluation
+    test_start = datetime(datetime.now().year, 1, 1)
+    test_end = datetime.now()
     orchestrator.run_comparison(train_start, train_end, test_start, test_end)
