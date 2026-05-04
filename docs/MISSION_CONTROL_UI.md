@@ -10,17 +10,17 @@ Build a production-grade, high-density "Mission Control" cockpit for the UQTS-20
 
 ## 3. Dashboard Layout (The 5 Panels)
 1. **The Spectral & Signal Viewer (Physicist's View)**:
-   - Real-time scrolling heatmap of Morlet Wavelet CWTs (top 10 stocks).
+   - Real-time scrolling heatmap of Morlet Wavelet CWTs. **Interactive**: Focuses on the asset selected in the Ranking Grid.
    - Stationarity Monitor (live ADF p-values).
-   - Feature SHAP Stream (live bar chart of feature importance).
+   - Feature SHAP Stream (live bar chart of idiosyncratic feature importance).
 2. **The Metacognition Panel (Model Health)**:
    - Bayesian Belief Gauge ($P(Valid | Result)$).
-   - Adversarial Drift Alert (2D scatter plot simulating t-SNE/U-MAP of training vs live manifold).
+   - Manifold Drift Monitor (2D scatter plot projecting training vs live manifolds in t-SNE space).
    - Alpha Decay Curve (Cumulative information gain over time).
 3. **The Cross-Sectional Ranking Grid (Quant View)**:
-   - Decile Ladder (Top 10% Longs in green, Bottom 10% Shorts in red).
-   - Long-Short Spread View (Cumulative performance chart).
-   - Factor Exposure Heatmap (Beta, Size, Volatility).
+   - Decile Ladder (20-stock universe: Top 10% Longs, Bottom 10% Shorts).
+   - **Clickable Selection**: Establish two-way WebSocket communication to update the Spectral Viewer on demand.
+   - Live Price Column: Real-time price sync via `yfinance` polling.
 4. **Execution & Reality Check**:
    - Implementation Shortfall (IS) Tracker (Decision vs. Execution price gap).
    - Slippage Heatmap (LOB fill locations).

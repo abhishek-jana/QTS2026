@@ -20,6 +20,11 @@ The **UQTS-2026** platform implements a "Signal vs. Fluid" framework. It treats 
 
 ## Implementation Decisions
 *   **Module: DataEngine (The Bi-temporal Source)**: A deep module that wraps QuestDB/DuckDB. It exposes a single interface `get_pit_view(as_of_knowledge_time)` which asserts that no data with a `knowledge_time` > `as_of_knowledge_time` is returned.
+*   **Strategic Anchor: The 'T-Minus 2' Buffer**: To ensure mathematical stability of the `FractionalDifferencer` (expanding window), data ingestion starts 2 years prior to the first training date.
+    *   **Data Ingestion Start**: 2016-01-01
+    *   **Model Training Start**: 2018-01-01 (Burn-in complete)
+    *   **Walk-Forward OOS**: 2023-01-01 to Present
+*   **The Micro-Universe (20 Tickers)**: The system monitors a microcosmic basket of 20 tickers across 6 sector clusters (Tech, Semis, Financials, Consumer, Energy, Healthcare) plus the `SPY` benchmark. This provides the GNN and RankNet with deep idiosyncratic crosstalk and effective residualization.
 *   **Module: AlphaCore (The Signal Processor)**: Encapsulates the `FractionalDifferencer` and `WaveletFeatureGenerator`. It takes raw bi-temporal streams and outputs normalized spectrograms.
 *   **Module: AlphaRanker (The Learning Engine)**: A PyTorch-based LTR module using Pairwise RankNet loss. It operates on cross-sectional Z-scores of residualized forward returns.
 *   **Module: MetaController (The Bayesian Brain)**: A monitoring layer that tracks model performance vs. expected manifold. It calculates the Bayesian Belief score used for position sizing.

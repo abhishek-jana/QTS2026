@@ -11,6 +11,8 @@ The platform was architected as a strict 3-tier evolution:
 ## 2. Phase 1: The Research Lab
 The foundation required absolute mathematical rigor to prevent data leakage and noise fitting.
 *   **Bi-temporal Ingestion:** We built a `DataEngine` that strictly separates *Event Time* (when something happened) from *Knowledge Time* (when the system learned about it). This guarantees zero look-ahead bias by hiding future price revisions during historical simulations.
+*   **The T-Minus 2 Anchor:** Institutional stationarity requires mathematical stability. We implemented a 2-year "burn-in" period (2016-2018) to allow the Fractional Differentiation kernel to stabilize before model training began in 2018.
+*   **The Micro-Universe:** We expanded the asset pool to 20 diverse tickers (SPY, Semiconductors, Financials, Consumer, Energy, and High-Beta Tech). This provides the signal depth necessary for the GNN and cross-sectional RankNet to extract true, durable alpha across multiple regimes.
 *   **Fractional Differentiation:** Standard differencing destroys the long-term memory of a price series. We implemented an expanding window fractional differencer ($d \approx 0.4$) to achieve stationarity while preserving crucial long-range dependencies.
 *   **Wavelet Spectrograms:** Using Morlet wavelets across dyadic scales ($2^1$ to $2^8$), we translated 1D price series into 2D market spectrograms, allowing the model to distinguish between high-frequency noise and low-frequency macro-regimes.
 *   **Residualized Alpha Labeling:** To prevent the model from simply proxying market beta, the `AlphaLabeler` residualizes forward returns against a market proxy (e.g., SPY) and applies cross-sectional Z-scoring to isolate pure idiosyncratic alpha.

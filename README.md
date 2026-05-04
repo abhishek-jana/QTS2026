@@ -35,6 +35,8 @@ graph TD
 
 ## 2. Key Capabilities
 - **Bi-temporal Isolation**: Strict separation of *Event Time* and *Knowledge Time*.
+- **Micro-Universe (20 Tickers)**: Diversified Tech, Semis, Financials, Energy, and Healthcare clusters + SPY benchmark.
+- **Burn-In Stability**: 2-year "T-Minus 2" (2016-2018) buffer for Fractional Diff mathematical stability.
 - **Multi-Modal Fusion**: LSTM (Temporal Signal) + ViT (Spatial Signal) late fusion.
 - **TorchScript Serialization**: Models serialized via Tracing for cross-language consistency.
 - **Sub-100μs Muscle**: Native C++26 execution for theoretical alpha.
