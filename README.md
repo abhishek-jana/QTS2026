@@ -41,67 +41,80 @@ graph TD
 - **TorchScript Serialization**: Models serialized via Tracing for cross-language consistency.
 - **Sub-100μs Muscle**: Native C++26 execution for theoretical alpha.
 
-## 3. Setup & Execution
+## 3. Step-by-Step Implementation Guide
 
-### **A. Prerequisites**
-- `uv` (Fast Python package manager)
-- `g++` (Supporting C++2b/26)
-- `cmake`
+Follow this sequential workflow to initialize, verify, and deploy the UQTS-2026 platform.
 
-### **B. Environment Initialization**
-```bash
-cd UQTS-2026
-uv sync
-```
+### **Phase 1: Environment & Data**
+1. **Initialize Project**:
+   ```bash
+   cd UQTS-2026
+   uv sync
+   ```
+2. **Setup Credentials**:
+   Create a `.env` file in the root directory:
+   ```env
+   ALPACA_API_KEY=your_key
+   ALPACA_SECRET_KEY=your_secret
+   ```
 
-### **C. Research: Alpha Discovery**
-Visualize the signal physics and multi-modal windows.
-```bash
-uv run jupyter lab research_lab/alpha_discovery.ipynb
-```
-*   **Snapshot Test**: See how `universe.snapshot()` generates aligned tensors in one call.
-*   **Spectrograms**: Inspect the Morlet wavelet scales.
-
-### **D. Validation: Test Suite**
-Ensure mathematical and architectural integrity.
-```bash
-uv run pytest
-```
-*   `tests/test_data_engine.py`: PIT Isolation & Correction logic.
-*   `tests/test_alpha_universe.py`: Plugin alignment & Multi-modal shapes.
-*   `tests/test_alpha_ranker.py`: RankNet convergence verification.
-*   `tests/test_meta_controller.py`: Bayesian belief decay/growth.
-
-### **E. Industrialization: RETRAIN Loop**
-Verify signal physics (ADF tests) and retrain pipeline.
+### **Phase 2: Signal Physics Audit**
+Before training, verify the mathematical integrity of the signal pipeline (Stationarity & Spectral Energy).
 ```bash
 uv run python -m research_lab.verify_physics
 ```
+*   **Metric**: Ensure ADF p-values for stationary series are $< 0.05$.
 
-### **F. Production: Execution Muscle**
-Compile and run the high-performance C++ trade sizer.
+### **Phase 3: Multi-Regime Backtesting**
+Train the 'Champion' vs. 'Challenger' models on historical data (2016-2022) and evaluate on the 2023-Present Out-of-Sample regime.
+```bash
+uv run python research_lab/backtest_comparison.py
+```
+*   **Goal**: Verify that the Challenger (Multi-Modal) IC exceeds the Champion (Baseline).
+
+### **Phase 4: High-Performance Serialization**
+Export the trained model to TorchScript for C++ execution.
+```bash
+# This is typically automated within the training pipeline.
+# To verify serialization manually:
+uv run python -c "from research_lab.alpha_ranker import MultiModalRankNet; MultiModalRankNet(scales=32).export('model.pt')"
+```
+
+### **Phase 5: Production Muscle Compilation**
+Compile the C++26 high-performance execution engine.
 ```bash
 cd execution_muscle
 g++ -std=c++2b main.cpp -o muscle
 ./muscle
 ```
 
-### **G. Mission Control: High-Density UI**
-Launch the professional cockpit for live signal monitoring.
-
-**1. Start Backend (FastAPI + WebSockets)**
+### **Phase 6: Forward Testing (Paper Trading)**
+Deploy the autonomous paper trading bot for live market evaluation.
 ```bash
-# From project root
-uv run python cockpit_backend/main.py
+# Set path and run module
+export PYTHONPATH=$PYTHONPATH:.
+uv run python -m execution_muscle.paper_bot
 ```
+*   **Operational Tip**: Run this in a `tmux` session for persistent execution (see `DEPLOYMENT.md`).
 
-**2. Start Frontend (React + Vite)**
-```bash
-cd cockpit_frontend
-npm install
-npm run dev
-```
-Navigate to `http://localhost:5173` to view the high-density cockpit.
+### **Phase 7: Mission Control Monitoring**
+Launch the visual cockpit to monitor live signals and meta-cognition metrics.
+
+1. **Start Backend**:
+   ```bash
+   uv run python cockpit_backend/main.py
+   ```
+2. **Start Frontend**:
+   ```bash
+   cd cockpit_frontend
+   npm run dev
+   ```
+   Navigate to `http://localhost:5173`. **Click any ticker** in the Ranking Grid to update the Spectral Viewer in real-time.
+
+## 4. Maintenance & Operations
+- **Configuration**: All tunable parameters (Universe, $d$ parameter, thresholds) are managed in `config.yaml`.
+- **SOP**: For professional 1-week deployment instructions, refer to **`DEPLOYMENT.md`**.
+- **Tests**: Run the full regression suite before any major change: `uv run pytest`.
 
 ## 4. Directory Structure
 - `/research_lab`: Alpha orchestrator, core math, and discovery notebooks.
