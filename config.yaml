@@ -19,3 +19,12 @@ ui:
   update_interval_ms: 500
   stream_start_offset_days: 120
   enable_realtime_polling: true
+
+execution:
+  mode: "paper" # paper | live
+  allocation_limit: 100000 # Max capital for the bot
+  max_position_size: 0.1 # 10% per ticker max
+  min_belief_threshold: 0.75 # Don't trade if belief score < this
+  alpaca:
+    base_url: "https://paper-api.alpaca.markets"
+    # Credentials should be set via .env (ALPACA_API_KEY, ALPACA_SECRET_KEY)
