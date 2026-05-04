@@ -87,8 +87,8 @@ const Heatmap = ({ data, title }) => {
   );
 };
 
-const RankingGrid = ({ ladder }) => {
-  // Fix 2: Unique-ify the list. One entry per ticker, highest score.
+const RankingGrid = ({ ladder, onSelectTicker }) => {
+  // Unique-ify the list. One entry per ticker, highest score.
   const aggregated = React.useMemo(() => {
     const map = {};
     ladder.forEach(item => {
@@ -115,10 +115,14 @@ const RankingGrid = ({ ladder }) => {
         </thead>
         <tbody>
           {aggregated.map((row, i) => (
-            <tr key={row.ticker} className="border-b border-slate-800/40 group hover:bg-emerald-500/5 transition-colors">
+            <tr 
+              key={row.ticker} 
+              onClick={() => onSelectTicker(row.ticker)}
+              className="border-b border-slate-800/40 group hover:bg-emerald-500/20 cursor-pointer transition-colors"
+            >
               <td className="py-2.5 flex items-center gap-2">
                 <div className={`w-1 h-3 ${row.score > 0 ? 'bg-emerald-500' : 'bg-red-500'} shadow-sm`} />
-                <span className="font-bold text-slate-200 tracking-tight">{row.ticker}</span>
+                <span className="font-bold text-slate-200 tracking-tight group-hover:text-emerald-400">{row.ticker}</span>
               </td>
               <td className="text-right py-2.5 font-mono text-slate-400 pr-4">
                 ${row.price > 0 ? row.price.toFixed(2) : "---"}
@@ -161,6 +165,12 @@ export default function MissionControl() {
 
   const triggerKillSwitch = () => {
     if (ws.current) ws.current.send('KILL_SWITCH');
+  };
+
+  const handleSelectTicker = (ticker) => {
+    if (ws.current && ws.current.readyState === WebSocket.OPEN) {
+      ws.current.send(JSON.stringify({ command: 'SET_TICKER', ticker }));
+    }
   };
 
   if (!data) return (
@@ -269,7 +279,7 @@ export default function MissionControl() {
         <Panel title="Ranking Grid" icon={TrendingUp} className="col-span-4 h-fit">
           <div className="flex flex-col gap-4">
             <div className="h-[500px]">
-               <RankingGrid ladder={data.rankings.ladder} />
+               <RankingGrid ladder={data.rankings.ladder} onSelectTicker={handleSelectTicker} />
             </div>
             
             <div className="h-64 border-t border-slate-800 pt-6 mt-4">

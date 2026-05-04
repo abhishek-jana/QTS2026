@@ -36,6 +36,15 @@ class DataStreamer:
         self.ls_equity_curve = [1.0]
         self.is_history = []
         self.live_prices = {t: 0.0 for t in self.tickers}
+        self.selected_ticker = self.tickers[0] # Default selection
+
+    def handle_command(self, data):
+        """Processes incoming commands from the UI."""
+        if data.get("command") == "SET_TICKER":
+            ticker = data.get("ticker")
+            if ticker in self.tickers:
+                self.selected_ticker = ticker
+                print(f"🎯 Spectral Viewer updated to focus on: {ticker}")
 
     async def _poll_realtime_prices(self):
         """Background task to fetch latest market quotes."""
@@ -115,8 +124,8 @@ class DataStreamer:
 
     def _get_spectral_data(self, batch):
         try:
-            # Top ticker CWT
-            ticker = self.tickers[0]
+            # Focus on the user-selected ticker
+            ticker = self.selected_ticker
             ticker_indices = [i for i, t in enumerate(batch.tickers) if t == ticker]
             if not ticker_indices:
                 return self._get_empty_spectral_data()

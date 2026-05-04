@@ -47,12 +47,19 @@ async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     try:
         while True:
-            # Keep connection alive
+            # Keep connection alive and listen for commands
             data = await websocket.receive_text()
-            # Handle incoming commands from UI (e.g. Kill Switch)
-            if data == "KILL_SWITCH":
-                print("⚠️ KILL SWITCH TRIGGERED FROM COCKPIT ⚠️")
-                await manager.broadcast(json.dumps({"type": "ALERT", "msg": "EMERGENCY LIQUIDATION INITIATED"}))
+            
+            try:
+                # 1. Parse JSON commands (Dynamic Ticker Selection, etc.)
+                command_data = json.loads(data)
+                if "command" in command_data:
+                    streamer.handle_command(command_data)
+            except json.JSONDecodeError:
+                # 2. Handle legacy string commands (Kill Switch)
+                if data == "KILL_SWITCH":
+                    print("⚠️ KILL SWITCH TRIGGERED FROM COCKPIT ⚠️")
+                    await manager.broadcast(json.dumps({"type": "ALERT", "msg": "EMERGENCY LIQUIDATION INITIATED"}))
     except WebSocketDisconnect:
         manager.disconnect(websocket)
 
