@@ -32,7 +32,7 @@ const Panel = ({ title, icon: Icon, children, className = "" }) => (
       <Icon className="w-4 h-4 text-emerald-500" />
       <h2 className="text-xs font-mono uppercase tracking-widest text-slate-300 font-bold">{title}</h2>
     </div>
-    <div className="flex-1 overflow-y-auto no-scrollbar min-h-0">
+    <div className="flex-1 min-h-0">
       {children}
     </div>
   </div>
@@ -165,55 +165,57 @@ export default function MissionControl() {
   );
 
   return (
-    <div className="h-screen w-full bg-black text-slate-300 font-mono text-xs overflow-hidden flex flex-col p-2 gap-2">
+    <div className="min-h-screen w-full bg-black text-slate-300 font-mono text-xs flex flex-col p-2 gap-2 overflow-y-auto">
       {/* Header */}
-      <div className="flex-none h-12 flex justify-between items-center border-b border-slate-800 pb-2">
+      <div className="flex-none h-16 flex justify-between items-center border-b border-slate-800 pb-2">
         <div className="flex items-center gap-4">
           <div className="text-lg font-bold text-emerald-500">UQTS-2026 MISSION CONTROL</div>
           <div className="flex items-center gap-2">
             <div className={`w-2 h-2 rounded-full ${status === 'active' ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.8)]' : 'bg-red-500'}`} />
             <span className="uppercase text-[10px]">{status}</span>
           </div>
-          <div className="text-[10px] text-slate-500">KNOWLEDGE_TIME: {data.timestamp}</div>
+          <div className="text-[10px] text-slate-500 font-mono">KNOWLEDGE_TIME: {data.timestamp}</div>
         </div>
         <button 
           onClick={triggerKillSwitch}
-          className="bg-red-900/30 border border-red-500 text-red-500 px-4 py-1 hover:bg-red-500 hover:text-white transition-all font-bold uppercase"
+          className="bg-red-900/30 border border-red-500 text-red-500 px-6 py-2 hover:bg-red-500 hover:text-white transition-all font-bold uppercase tracking-tighter"
         >
           Emergency Kill Switch
         </button>
       </div>
 
-      {/* Grid Layout - HARD CONSTRAINED */}
-      <div className="flex-1 grid grid-cols-12 grid-rows-[repeat(6,minmax(0,1fr))] gap-2 min-h-0 overflow-hidden">
+      {/* Main Container - No longer fixed height */}
+      <div className="flex-1 grid grid-cols-12 gap-2 pb-8">
         
         {/* 1. Spectral & Signal Viewer */}
-        <Panel title="Spectral & Signal Viewer" icon={Activity} className="col-span-4 row-span-3">
-          <div className="flex flex-col gap-2 min-h-full">
-            <div className="h-48 flex-none relative">
+        <Panel title="Spectral & Signal Viewer" icon={Activity} className="col-span-4 h-fit">
+          <div className="flex flex-col gap-6">
+            <div className="h-72 relative border border-slate-800 bg-black shadow-inner">
               <Heatmap data={data.spectral.cwt} title={`${data.spectral.ticker} Wavelet Spectrogram (Morlet)`} />
             </div>
-            <div className="grid grid-cols-2 gap-2 flex-none mt-2">
-              <div className="bg-slate-800/50 p-2 border border-slate-700 flex flex-col justify-center overflow-hidden">
+            <div className="grid grid-cols-2 gap-2">
+              <div className="bg-slate-800/50 p-6 border border-slate-700 flex flex-col justify-center">
                 <div className="text-[10px] text-slate-500 uppercase tracking-tighter leading-none mb-1">ADF p-value</div>
-                <div className={`text-lg font-bold ${data.spectral.adf_p_value < 0.05 ? 'text-emerald-500' : 'text-red-500 animate-pulse'}`}>
+                <div className={`text-3xl font-bold ${data.spectral.adf_p_value < 0.05 ? 'text-emerald-500' : 'text-red-500 animate-pulse'}`}>
                   {data.spectral.adf_p_value.toFixed(6)}
                 </div>
+                <div className="text-[8px] text-slate-600 mt-1 uppercase font-bold">Stationarity Test</div>
               </div>
-              <div className="bg-slate-800/50 p-2 border border-slate-700 flex flex-col justify-center overflow-hidden">
-                <div className="text-[10px] text-slate-500 uppercase tracking-tighter leading-none mb-1">Status</div>
+              <div className="bg-slate-800/50 p-6 border border-slate-700 flex flex-col justify-center">
+                <div className="text-[10px] text-slate-500 uppercase tracking-tighter leading-none mb-1">Model State</div>
                 <div className="flex gap-2 mt-1">
-                  <span className="bg-emerald-900/30 text-emerald-400 px-1 border border-emerald-800 text-[8px] font-bold">STATIONARY</span>
+                  <span className="bg-emerald-900/40 text-emerald-400 px-2 py-1 border border-emerald-800 text-[10px] font-bold">STATIONARY</span>
+                  <span className="bg-emerald-900/40 text-emerald-400 px-2 py-1 border border-emerald-800 text-[10px] font-bold">READY</span>
                 </div>
               </div>
             </div>
-            <div className="h-24 flex-none mt-1">
-              <div className="text-[9px] text-slate-500 mb-1 uppercase tracking-widest opacity-50 text-right">Impact (SHAP)</div>
+            <div className="h-64 mt-2">
+              <div className="text-[10px] text-slate-500 mb-4 uppercase tracking-widest text-right">Idiosyncratic Feature Importance (SHAP)</div>
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={Object.entries(data.spectral.shap_values).map(([name, val]) => ({ name, val }))} layout="vertical">
                   <XAxis type="number" hide domain={[0, 1]} />
-                  <YAxis dataKey="name" type="category" width={60} tick={{ fontSize: 7, fill: '#64748b' }} />
-                  <Bar dataKey="val" fill="#10b981" radius={[0, 2, 2, 0]} />
+                  <YAxis dataKey="name" type="category" width={90} tick={{ fontSize: 10, fill: '#94a3b8' }} />
+                  <Bar dataKey="val" fill="#10b981" radius={[0, 4, 4, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             </div>
@@ -221,37 +223,37 @@ export default function MissionControl() {
         </Panel>
 
         {/* 2. Metacognition Panel */}
-        <Panel title="Metacognition Panel" icon={ShieldAlert} className="col-span-4 row-span-3">
-          <div className="flex flex-col min-h-full gap-4">
-             <div className="flex-none flex justify-between items-center bg-slate-800/50 p-4 border border-slate-700">
+        <Panel title="Metacognition Panel" icon={ShieldAlert} className="col-span-4 h-fit">
+          <div className="flex flex-col gap-8">
+             <div className="flex justify-between items-center bg-slate-800/50 p-8 border border-slate-700 shadow-md">
                 <div className="flex flex-col">
-                  <span className="text-[10px] text-slate-500 uppercase">Bayesian Belief Score</span>
-                  <span className="text-3xl font-bold text-emerald-400">{(data.metacognition.belief_score * 100).toFixed(2)}%</span>
+                  <span className="text-[10px] text-slate-500 uppercase font-bold tracking-widest">Bayesian Belief Score</span>
+                  <span className="text-5xl font-bold text-emerald-400">{(data.metacognition.belief_score * 100).toFixed(2)}%</span>
                 </div>
-                <Gauge className="w-12 h-12 text-emerald-500 opacity-50" />
+                <Gauge className="w-16 h-16 text-emerald-500 opacity-40" />
              </div>
              
-             <div className="h-40 flex-none">
-                <div className="text-[10px] text-slate-500 mb-2 uppercase">Manifold Drift (t-SNE Space)</div>
+             <div className="h-80">
+                <div className="text-[10px] text-slate-500 mb-4 uppercase tracking-widest text-center">Manifold Drift (t-SNE Latent Manifold)</div>
                 <ResponsiveContainer width="100%" height="100%">
                   <ScatterChart>
                     <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-                    <XAxis type="number" dataKey="x" name="Latent 1" stroke="#475569" fontSize={8} label={{ value: 'Dim 1', position: 'insideBottomRight', offset: -5, fill: '#475569' }} />
-                    <YAxis type="number" dataKey="y" name="Latent 2" stroke="#475569" fontSize={8} label={{ value: 'Dim 2', angle: -90, position: 'insideLeft', fill: '#475569' }} />
+                    <XAxis type="number" dataKey="x" name="Latent 1" stroke="#475569" fontSize={11} label={{ value: 'Latent 1', position: 'insideBottomRight', offset: -5, fill: '#475569' }} />
+                    <YAxis type="number" dataKey="y" name="Latent 2" stroke="#475569" fontSize={11} label={{ value: 'Latent 2', angle: -90, position: 'insideLeft', fill: '#475569' }} />
                     <Scatter name="Training" data={data.metacognition.manifold_drift.slice(0, 5).map(p => ({ x: p[0], y: p[1] }))} fill="#475569" shape="circle" />
                     <Scatter name="Live" data={data.metacognition.manifold_drift.slice(5).map(p => ({ x: p[0], y: p[1] }))} fill="#10b981" shape="cross" />
                   </ScatterChart>
                 </ResponsiveContainer>
              </div>
 
-             <div className="h-24 flex-none">
-                <div className="text-[10px] text-slate-500 mb-2 uppercase">Alpha Decay (Info Gain)</div>
+             <div className="h-64 mt-4">
+                <div className="text-[10px] text-slate-500 mb-2 uppercase tracking-widest">Alpha Decay (Cumulative Information Gain)</div>
                 <ResponsiveContainer width="100%" height="100%">
                   <LineChart data={data.metacognition.alpha_decay.map((val, i) => ({ i, val }))}>
-                    <Line type="monotone" dataKey="val" stroke="#10b981" dot={false} strokeWidth={2} />
+                    <Line type="monotone" dataKey="val" stroke="#10b981" dot={false} strokeWidth={4} />
                     <XAxis hide />
-                    <YAxis stroke="#475569" fontSize={8} tickCount={3} />
-                    <Tooltip contentStyle={{ backgroundColor: '#0f172a', border: '1px solid #1e293b', fontSize: '8px' }} />
+                    <YAxis stroke="#475569" fontSize={10} label={{ value: 'Info Gain', angle: -90, position: 'insideLeft', fill: '#475569' }} />
+                    <Tooltip contentStyle={{ backgroundColor: '#0f172a', border: '1px solid #1e293b', fontSize: '11px' }} />
                   </LineChart>
                 </ResponsiveContainer>
              </div>
@@ -259,18 +261,20 @@ export default function MissionControl() {
         </Panel>
 
         {/* 3. Cross-Sectional Ranking Grid */}
-        <Panel title="Ranking Grid" icon={TrendingUp} className="col-span-4 row-span-6">
-          <div className="flex flex-col h-full">
-            <RankingGrid ladder={data.rankings.ladder} />
+        <Panel title="Ranking Grid" icon={TrendingUp} className="col-span-4 h-fit">
+          <div className="flex flex-col gap-4">
+            <div className="h-[500px]">
+               <RankingGrid ladder={data.rankings.ladder} />
+            </div>
             
-            <div className="h-40 border-t border-slate-800 pt-4 mt-4">
-              <div className="text-[10px] text-slate-500 mb-2 uppercase">L/S Equity Spread (Cumulative Return %)</div>
+            <div className="h-64 border-t border-slate-800 pt-6 mt-4">
+              <div className="text-[10px] text-slate-500 mb-2 uppercase font-bold tracking-widest">L/S Equity Spread (Cumulative Return %)</div>
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={data.rankings.ls_spread.map((val, i) => ({ i, val }))}>
-                  <Line type="stepAfter" dataKey="val" stroke="#10b981" dot={false} strokeWidth={2} />
-                  <CartesianGrid stroke="#1e293b" vertical={false} />
+                  <Line type="stepAfter" dataKey="val" stroke="#10b981" dot={false} strokeWidth={3} />
+                  <CartesianGrid stroke="#1e293b" vertical={false} strokeDasharray="3 3" />
                   <XAxis hide />
-                  <YAxis stroke="#475569" fontSize={8} label={{ value: 'Perf %', angle: -90, position: 'insideLeft', fill: '#475569' }} />
+                  <YAxis stroke="#475569" fontSize={10} label={{ value: 'Perf %', angle: -90, position: 'insideLeft', fill: '#475569' }} />
                 </LineChart>
               </ResponsiveContainer>
             </div>
@@ -278,49 +282,50 @@ export default function MissionControl() {
         </Panel>
 
         {/* 4. Execution & Reality Check */}
-        <Panel title="Execution & Reality Check" icon={Cpu} className="col-span-8 row-span-2">
-          <div className="grid grid-cols-4 h-full gap-4">
-            <div className="col-span-1 flex flex-col justify-center gap-2">
-              <div className="text-[10px] text-slate-500 uppercase">Implementation Shortfall</div>
-              <div className="text-2xl font-bold text-slate-100">{data.execution.implementation_shortfall.toFixed(2)} <span className="text-xs text-slate-600 font-normal">BPS</span></div>
+        <Panel title="Execution & Reality Check" icon={Cpu} className="col-span-8 h-fit">
+          <div className="grid grid-cols-4 h-full gap-8 p-4">
+            <div className="col-span-1 flex flex-col justify-center gap-4 border-r border-slate-800 pr-4">
+              <div className="text-[10px] text-slate-500 uppercase font-bold tracking-tighter">Implementation Shortfall</div>
+              <div className="text-4xl font-bold text-slate-100">{data.execution.implementation_shortfall.toFixed(2)} <span className="text-sm text-slate-600 font-normal">BPS</span></div>
               {data.execution.needs_retune && (
-                <div className="text-[8px] text-red-500 flex items-center gap-1 animate-pulse">
-                  <AlertTriangle className="w-2 h-2" /> RL Agent needs retune
+                <div className="text-[10px] text-red-500 flex items-center gap-2 animate-pulse bg-red-900/20 p-2 border border-red-900">
+                  <AlertTriangle className="w-3 h-3" /> RL Agent: RETUNE REQUIRED
                 </div>
               )}
-              <div className="text-[8px] text-slate-500">IS VAR: {data.execution.is_var.toFixed(4)}</div>
+              <div className="text-[10px] text-slate-400 font-mono">VAR: {data.execution.is_var.toFixed(6)}</div>
             </div>
             <div className="col-span-2">
-              <div className="text-[10px] text-slate-500 mb-2 uppercase text-center">Slippage Heatmap (Limit Order Book)</div>
-              <div className="grid grid-cols-5 grid-rows-5 h-20 gap-[2px]">
+              <div className="text-[10px] text-slate-500 mb-4 uppercase text-center font-bold tracking-widest">LOB Slippage Heatmap (Energy Distribution)</div>
+              <div className="grid grid-cols-5 grid-rows-5 h-40 gap-[3px] bg-slate-800/20 p-2 border border-slate-800 shadow-inner">
                 {data.execution.slippage_heatmap.flat().map((v, i) => (
-                   <div key={i} className="bg-emerald-500" style={{ opacity: v }} />
+                   <div key={i} className="bg-emerald-500 transition-all duration-300" style={{ opacity: v }} />
                 ))}
               </div>
             </div>
-            <div className="col-span-1 flex flex-col justify-center items-end text-right">
-              <div className="text-[10px] text-slate-500 uppercase italic">Execution Muscle</div>
-              <div className="text-[10px] font-bold text-emerald-500">C++26 [CONNECTED]</div>
-              <div className="text-[8px] text-slate-600">Latency: 84μs</div>
+            <div className="col-span-1 flex flex-col justify-center items-end text-right gap-2">
+              <div className="text-[11px] text-slate-500 uppercase italic font-bold tracking-tighter">Execution Muscle</div>
+              <div className="text-[12px] font-bold text-emerald-500 bg-emerald-900/20 px-2 py-1 border border-emerald-900 shadow-[0_0_10px_rgba(16,185,129,0.2)]">C++26 [LINKED]</div>
+              <div className="text-[10px] text-slate-400 font-mono">LATENCY: 84.2μs</div>
+              <div className="text-[10px] text-slate-600">STABILITY: NOMINAL</div>
             </div>
           </div>
         </Panel>
 
         {/* 5. Pipeline Control */}
-        <Panel title="Research Pipeline Control" icon={Terminal} className="col-span-8 row-span-1">
-          <div className="flex justify-between items-center h-full">
-            <div className="flex gap-8 items-center">
-               <div className="flex items-center gap-2">
-                  <span className="text-slate-500 uppercase text-[10px]">Champion:</span>
-                  <span className="text-emerald-500 font-bold underline cursor-help">Sharpe {data.pipeline.champion_sharpe}</span>
+        <Panel title="Research Pipeline Control" icon={Terminal} className="col-span-4 h-fit">
+          <div className="flex flex-col gap-6 h-full justify-center">
+            <div className="flex justify-around items-center border-b border-slate-800 pb-4">
+               <div className="flex flex-col items-center">
+                  <span className="text-slate-500 uppercase text-[10px] font-bold">Champion</span>
+                  <span className="text-emerald-500 text-xl font-bold underline cursor-help">SHARPE {data.pipeline.champion_sharpe}</span>
                </div>
-               <div className="flex items-center gap-2">
-                  <span className="text-slate-500 uppercase text-[10px]">Challenger:</span>
-                  <span className="text-cyan-400 font-bold underline cursor-help">Sharpe {data.pipeline.challenger_sharpe}</span>
+               <div className="flex flex-col items-center">
+                  <span className="text-slate-500 uppercase text-[10px] font-bold">Challenger</span>
+                  <span className="text-cyan-400 text-xl font-bold underline cursor-help">SHARPE {data.pipeline.challenger_sharpe}</span>
                </div>
             </div>
-            <div className="flex-1 ml-10 overflow-hidden bg-black p-2 border border-slate-800 text-emerald-500/80 text-[10px]">
-               <span className="animate-pulse mr-2">&gt;</span> {data.pipeline.training_progress}
+            <div className="overflow-hidden bg-black p-4 border border-slate-800 text-emerald-500/80 font-mono text-[11px] shadow-inner h-24">
+               <span className="animate-pulse mr-2 text-white font-bold">&gt;</span> {data.pipeline.training_progress}
             </div>
           </div>
         </Panel>
