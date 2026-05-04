@@ -64,6 +64,7 @@ Before training, verify the mathematical integrity of the signal pipeline (Stati
 uv run python -m research_lab.verify_physics
 ```
 *   **Metric**: Ensure ADF p-values for stationary series are $< 0.05$.
+*   **Interpretation**: Refer to the **"Physics Audit: Interpreting the Signal"** section in `docs/ARTICLE.md` for a guide on analyzing stationarity and scale activation energy.
 
 ### **Phase 3: Multi-Regime Backtesting**
 Train the 'Champion' vs. 'Challenger' models on historical data (2016-2022) and evaluate on the 2023-Present Out-of-Sample regime.

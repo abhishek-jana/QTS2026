@@ -17,6 +17,13 @@ The foundation required absolute mathematical rigor to prevent data leakage and 
 *   **Wavelet Spectrograms:** Using Morlet wavelets across dyadic scales ($2^1$ to $2^8$), we translated 1D price series into 2D market spectrograms, allowing the model to distinguish between high-frequency noise and low-frequency macro-regimes.
 *   **Residualized Alpha Labeling:** To prevent the model from simply proxying market beta, the `AlphaLabeler` residualizes forward returns against a market proxy (e.g., SPY) and applies cross-sectional Z-scoring to isolate pure idiosyncratic alpha.
 
+### **The Physics Audit: Interpreting the Signal**
+Before training, the system is audited via `verify_physics.py`. Here is how to interpret a "Green Light" result:
+
+1.  **Stationarity (ADF Test)**: Raw price data typically shows an ADF p-value $> 0.95$ (Non-Stationary). A successful Fractional Differentiation ($d=0.4$) will drop this to $p < 0.0001$. This proves the data is now mean-reverting and safe for Neural Network training without destroying historical "echoes."
+2.  **Spectral Energy (Scale Activation)**: The Morlet energy should follow a logarithmic progression. High-frequency "Fluid" (Scales $2^1-2^3$) should show low energy ($\approx 0.3$), while macro "Signal" (Scales $2^7-2^8$) should show significantly higher energy ($\approx 15.0$). This confirms the model is correctly ignoring day-to-day noise in favor of durable structural trends.
+3.  **Generalizability**: Consistent energy profiles across different tickers (e.g., AAPL vs. GS) confirm that the "Signal vs. Fluid" framework is capturing a universal market physics, not just sector-specific quirks.
+
 ## 3. Phase 2: The Alpha Factory
 With the signal physics verified, we industrialized the training process.
 *   **RankNet LTR:** We implemented a Learning-to-Rank (LTR) neural network in PyTorch. Using a Pairwise RankNet loss, the model learns the relative cross-sectional ordering of the asset universe rather than absolute price predictions.
