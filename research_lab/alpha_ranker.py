@@ -81,16 +81,14 @@ class RankNet(nn.Module):
         return self.model(x)
 
     @torch.jit.ignore
-    def fit(self, dataset, epochs: int = 50, lr: float = 0.01):
+    def fit(self, dataset, epochs: int = 50, lr: float = 0.01, verbose: bool = True):
         """
-        High-level training interface.
-        Supports MultiModalBatch, TensorDataset, or (X, y) tuple.
+        High-level training interface with verbose logging.
         """
         self.train()
         optimizer = optim.Adam(self.parameters(), lr=lr)
         criterion = PairwiseRankLoss()
 
-        # Handle (X, y) tuple
         if isinstance(dataset, tuple) and len(dataset) == 2:
             from torch.utils.data import TensorDataset
             dataset = TensorDataset(*dataset)
@@ -100,6 +98,7 @@ class RankNet(nn.Module):
             loader = DataLoader(dataset, batch_size=min(32, len(dataset)), shuffle=True)
             
             for epoch in range(epochs):
+                total_loss = 0
                 for batch in loader:
                     optimizer.zero_grad()
                     if isinstance(batch, dict):
@@ -119,6 +118,10 @@ class RankNet(nn.Module):
                     loss = criterion(s_i, s_j, target.unsqueeze(1))
                     loss.backward()
                     optimizer.step()
+                    total_loss += loss.item()
+                
+                if verbose and (epoch % 5 == 0 or epoch == epochs - 1):
+                    print(f"   [Epoch {epoch+1}/{epochs}] Avg Loss: {total_loss/len(loader):.6f}")
 
     @torch.jit.ignore
     def predict_dataset(self, dataset):
