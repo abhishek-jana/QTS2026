@@ -51,8 +51,9 @@ class YFinanceIngestor:
 if __name__ == "__main__":
     engine = DataEngine()
     ingestor = YFinanceIngestor(engine)
-    # Test with a small liquid universe
-    ingestor.ingest_universe(['AAPL', 'MSFT', 'SPY'], '2022-01-01', '2024-01-01')
+    # Test with expanded high-beta tech universe
+    ingestor.ingest_universe(['AAPL', 'MSFT', 'GOOG', 'SPY', 'AMZN', 'NFLX', 'META', 'NVDA'], '2022-01-01', '2024-01-01')
+
     
     # Verify PIT view
     view = engine.get_pit_view('AAPL', datetime(2023, 1, 1))

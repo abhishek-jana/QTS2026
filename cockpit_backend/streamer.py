@@ -7,16 +7,16 @@ from research_lab.alpha_universe import AlphaUniverse
 from research_lab.plugins.core_plugins import SequentialPlugin, SpatialPlugin
 from research_lab.real_data_ingestor import YFinanceIngestor
 from research_lab.alpha_ranker import MultiModalRankNet
-
 class DataStreamer:
     def __init__(self, manager):
         self.manager = manager
-        self.tickers = ["AAPL", "MSFT", "GOOG", "SPY"]
+        self.tickers = ["AAPL", "MSFT", "GOOG", "SPY", "AMZN", "NFLX", "META", "NVDA"]
         self.lab = AlphaUniverse(plugins=[SequentialPlugin(), SpatialPlugin()])
-        
+
         # 1. Ingest Real Data
         ingestor = YFinanceIngestor(self.lab.engine)
         ingestor.ingest_universe(self.tickers, "2022-01-01", "2024-05-03")
+
         
         # 2. Start at a stable point in real history
         self.current_knowledge_time = datetime(2023, 1, 1) 

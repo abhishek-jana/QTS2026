@@ -1,39 +1,48 @@
 #pragma once
+#include <iostream>
+#include <vector>
+
 #include "kelly_sizer.hpp"
 #include "mpc_solver.hpp"
+#include "fractional_differencer.hpp"
 
 namespace uqts {
 
 /**
- * ExecutionPipeline: A Deep Module encapsulating sizing and execution logic.
- * This provides a 'Seam' for the system where execution strategy can be 
- * swapped or modified without affecting the caller.
+ * ExecutionPipeline: The high-leverage seam for production trading.
+ * Orchestrates signal transformation, risk scaling, and trade optimization.
  */
 class ExecutionPipeline {
 public:
-    ExecutionPipeline() = default;
-    
-    /**
-     * Initializes the pipeline with specific MPC parameters.
-     */
-    explicit ExecutionPipeline(const MPCParameters& params) : m_params(params) {}
+    ExecutionPipeline() : fd_(0.4) {}
 
     /**
-     * Executes the full execution sequence:
-     * 1. Kelly Sizing based on alpha, variance, and belief.
-     * 2. MPC Solver to determine the optimal target weight given market impact lambda.
+     * Entry point for a production trade decision.
+     * Takes raw signal and returns optimal portfolio weight.
      */
-    double calculate_target_weight(double alpha, double variance, double belief, double current_weight) {
-        double raw_fraction = KellySizer::calculate_fraction(alpha, variance, belief);
-        return MPCSolver::solve_single_step(raw_fraction, current_weight, m_params);
+    double calculate_target_weight(double alpha_raw, double variance, double belief, double current_weight) {
+        
+        // 1. Production Kelly Scaling
+        // Incorporates the Bayesian Belief Score from the Metacognition Panel.
+        double kelly_fraction = KellySizer::calculate_fraction(alpha_raw, variance, belief);
+        
+        // 2. Multi-Period MPC Optimization
+        // Minimizes market impact over a 5-tick horizon.
+        MPCParameters params;
+        double target_delta = MPCSolver::solve_horizon(kelly_fraction, current_weight, params);
+        
+        return current_weight + target_delta;
     }
 
-    // Accessors for parameter management
-    void set_parameters(const MPCParameters& params) { m_params = params; }
-    const MPCParameters& get_parameters() const { return m_params; }
+    /**
+     * Demonstrates the C++ Signal Path (Fractional Differentiation).
+     */
+    std::vector<double> process_raw_prices(const std::vector<double>& prices) {
+        return fd_.transform(prices);
+    }
 
 private:
-    MPCParameters m_params;
+    FractionalDifferencer fd_;
 };
 
 } // namespace uqts

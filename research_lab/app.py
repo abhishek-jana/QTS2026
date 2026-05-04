@@ -19,9 +19,9 @@ st.markdown("### Interactive Multi-Resolution Signal Analysis (Signal vs. Fluid)
 
 # 1. Sidebar Configuration
 st.sidebar.header("Universe Settings")
-tickers = st.sidebar.multiselect("Select Tickers", ["AAPL", "MSFT", "GOOG", "SPY"], default=["AAPL", "SPY"])
+tickers = st.sidebar.multiselect("Select Tickers", ["AAPL", "MSFT", "GOOG", "SPY", "AMZN", "NFLX", "META", "NVDA"], default=["AAPL", "SPY", "NVDA", "META"])
 lookback = st.sidebar.slider("Lookback Window (T)", 21, 252, 63)
-as_of_date = st.sidebar.date_input("Knowledge Date (PIT)", datetime(2020, 9, 7))
+as_of_date = st.sidebar.date_input("Knowledge Date (PIT)", datetime(2023, 5, 3))
 
 # 2. Lab Initialization
 @st.cache_resource

@@ -15,8 +15,8 @@ class BacktestOrchestrator:
     Executes and compares 'Champion' vs 'Challenger' models on real data.
     """
     def __init__(self):
-        # 1. Setup Universe with Real Data (Up to current date 2026)
-        self.tickers = ['AAPL', 'MSFT', 'GOOG', 'SPY']
+        # 1. Setup Universe with Expanded tech basket
+        self.tickers = ['AAPL', 'MSFT', 'GOOG', 'SPY', 'AMZN', 'NFLX', 'META', 'NVDA']
         self.plugins = [SequentialPlugin(), SpatialPlugin()]
         self.universe = AlphaUniverse(plugins=self.plugins)
         

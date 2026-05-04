@@ -208,12 +208,12 @@ export default function MissionControl() {
               </div>
             </div>
             <div className="h-24 flex-none mt-1">
-              <div className="text-[9px] text-slate-500 mb-1 uppercase tracking-widest opacity-50">Feature Importance</div>
+              <div className="text-[9px] text-slate-500 mb-1 uppercase tracking-widest opacity-50 text-right">Impact (SHAP)</div>
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={Object.entries(data.spectral.shap_values).map(([name, val]) => ({ name, val }))} layout="vertical">
                   <XAxis type="number" hide domain={[0, 1]} />
                   <YAxis dataKey="name" type="category" width={60} tick={{ fontSize: 7, fill: '#64748b' }} />
-                  <Bar dataKey="val" fill="#10b981" />
+                  <Bar dataKey="val" fill="#10b981" radius={[0, 2, 2, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             </div>
@@ -232,12 +232,12 @@ export default function MissionControl() {
              </div>
              
              <div className="h-40 flex-none">
-                <div className="text-[10px] text-slate-500 mb-2 uppercase">Adversarial Drift (Training vs Live)</div>
+                <div className="text-[10px] text-slate-500 mb-2 uppercase">Manifold Drift (t-SNE Space)</div>
                 <ResponsiveContainer width="100%" height="100%">
                   <ScatterChart>
                     <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-                    <XAxis type="number" dataKey="x" hide />
-                    <YAxis type="number" dataKey="y" hide />
+                    <XAxis type="number" dataKey="x" name="Latent 1" stroke="#475569" fontSize={8} label={{ value: 'Dim 1', position: 'insideBottomRight', offset: -5, fill: '#475569' }} />
+                    <YAxis type="number" dataKey="y" name="Latent 2" stroke="#475569" fontSize={8} label={{ value: 'Dim 2', angle: -90, position: 'insideLeft', fill: '#475569' }} />
                     <Scatter name="Training" data={data.metacognition.manifold_drift.slice(0, 5).map(p => ({ x: p[0], y: p[1] }))} fill="#475569" shape="circle" />
                     <Scatter name="Live" data={data.metacognition.manifold_drift.slice(5).map(p => ({ x: p[0], y: p[1] }))} fill="#10b981" shape="cross" />
                   </ScatterChart>
@@ -245,12 +245,13 @@ export default function MissionControl() {
              </div>
 
              <div className="h-24 flex-none">
-                <div className="text-[10px] text-slate-500 mb-2 uppercase">Alpha Decay Curve (30D)</div>
+                <div className="text-[10px] text-slate-500 mb-2 uppercase">Alpha Decay (Info Gain)</div>
                 <ResponsiveContainer width="100%" height="100%">
                   <LineChart data={data.metacognition.alpha_decay.map((val, i) => ({ i, val }))}>
                     <Line type="monotone" dataKey="val" stroke="#10b981" dot={false} strokeWidth={2} />
                     <XAxis hide />
-                    <YAxis hide />
+                    <YAxis stroke="#475569" fontSize={8} tickCount={3} />
+                    <Tooltip contentStyle={{ backgroundColor: '#0f172a', border: '1px solid #1e293b', fontSize: '8px' }} />
                   </LineChart>
                 </ResponsiveContainer>
              </div>
@@ -263,12 +264,13 @@ export default function MissionControl() {
             <RankingGrid ladder={data.rankings.ladder} />
             
             <div className="h-40 border-t border-slate-800 pt-4 mt-4">
-              <div className="text-[10px] text-slate-500 mb-2 uppercase">L/S Equity Spread View</div>
+              <div className="text-[10px] text-slate-500 mb-2 uppercase">L/S Equity Spread (Cumulative Return %)</div>
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={data.rankings.ls_spread.map((val, i) => ({ i, val }))}>
                   <Line type="stepAfter" dataKey="val" stroke="#10b981" dot={false} strokeWidth={2} />
                   <CartesianGrid stroke="#1e293b" vertical={false} />
                   <XAxis hide />
+                  <YAxis stroke="#475569" fontSize={8} label={{ value: 'Perf %', angle: -90, position: 'insideLeft', fill: '#475569' }} />
                 </LineChart>
               </ResponsiveContainer>
             </div>
