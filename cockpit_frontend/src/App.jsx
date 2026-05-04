@@ -92,12 +92,12 @@ const RankingGrid = ({ ladder }) => {
   const aggregated = React.useMemo(() => {
     const map = {};
     ladder.forEach(item => {
-      if (!map[item.ticker] || item.score > map[item.ticker]) {
-        map[item.ticker] = item.score;
+      if (!map[item.ticker] || item.score > map[item.ticker].score) {
+        map[item.ticker] = { score: item.score, price: item.live_price };
       }
     });
     return Object.entries(map)
-      .map(([ticker, score]) => ({ ticker, score }))
+      .map(([ticker, data]) => ({ ticker, score: data.score, price: data.price }))
       .sort((a, b) => b.score - a.score);
   }, [ladder]);
 
@@ -108,6 +108,7 @@ const RankingGrid = ({ ladder }) => {
         <thead className="sticky top-0 bg-slate-900 shadow-sm">
           <tr>
             <th className="text-left py-2 text-slate-500 uppercase font-normal">Ticker</th>
+            <th className="text-right py-2 text-slate-500 uppercase font-normal pr-4">Live Price</th>
             <th className="text-right py-2 text-slate-500 uppercase font-normal pr-4">Z-Score</th>
             <th className="text-right py-2 text-slate-500 uppercase font-normal">Action</th>
           </tr>
@@ -118,6 +119,9 @@ const RankingGrid = ({ ladder }) => {
               <td className="py-2.5 flex items-center gap-2">
                 <div className={`w-1 h-3 ${row.score > 0 ? 'bg-emerald-500' : 'bg-red-500'} shadow-sm`} />
                 <span className="font-bold text-slate-200 tracking-tight">{row.ticker}</span>
+              </td>
+              <td className="text-right py-2.5 font-mono text-slate-400 pr-4">
+                ${row.price > 0 ? row.price.toFixed(2) : "---"}
               </td>
               <td className={`text-right py-2.5 font-mono ${row.score > 0 ? 'text-emerald-400' : 'text-red-400'} pr-4`}>
                 {row.score.toFixed(4)}

@@ -2,29 +2,102 @@ import asyncio
 import json
 import numpy as np
 import torch
+import pandas as pd
+import yaml
+import yfinance as yf
 from datetime import datetime, timedelta
 from research_lab.alpha_universe import AlphaUniverse
 from research_lab.plugins.core_plugins import SequentialPlugin, SpatialPlugin
 from research_lab.real_data_ingestor import YFinanceIngestor
 from research_lab.alpha_ranker import MultiModalRankNet
+
 class DataStreamer:
     def __init__(self, manager):
         self.manager = manager
-        self.tickers = ["AAPL", "MSFT", "GOOG", "SPY", "AMZN", "NFLX", "META", "NVDA"]
-        self.lab = AlphaUniverse(plugins=[SequentialPlugin(), SpatialPlugin()])
         
-        # 1. Ingest Real Data (Dynamic up to today)
-        today_str = datetime.now().strftime("%Y-%m-%d")
+        # 0. Load Configuration
+        with open("config.yaml", "r") as f:
+            self.config = yaml.safe_load(f)
+            
+        self.tickers = self.config['universe']['tickers']
+        # Note: We use the config's d_param for the brain
+        self.lab = AlphaUniverse(plugins=[
+            SequentialPlugin(d_param=self.config['research']['fd_d_param']), 
+            SpatialPlugin()
+        ])
+        
+        # 1. Ingest Historical Data (Dynamic up to today)
         ingestor = YFinanceIngestor(self.lab.engine)
-        ingestor.ingest_universe(self.tickers, "2022-01-01", today_str)
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        ingestor.ingest_universe(self.tickers, self.config['research']['start_date'], today_str)
         
-        # 2. Start live clock 6 months before today for demo history
-        self.current_knowledge_time = datetime.now() - timedelta(days=120) 
- 
-
-        # 3. Persistent State for Stochastic Realism
+        # 2. Setup Live State
+        self.current_knowledge_time = datetime.now() - timedelta(days=self.config['ui']['stream_start_offset_days']) 
         self.ls_equity_curve = [1.0]
         self.is_history = []
+        self.live_prices = {t: 0.0 for t in self.tickers}
+
+    async def _poll_realtime_prices(self):
+        """Background task to fetch latest market quotes."""
+        while True:
+            try:
+                # Fetch only the last minute for all tickers
+                # Using a small period and interval to get the current quote
+                data = yf.download(self.tickers, period="1d", interval="1m", progress=False)
+                if not data.empty:
+                    # Handle MultiIndex for multiple tickers
+                    if isinstance(data.columns, pd.MultiIndex):
+                        prices = data['Close'].iloc[-1]
+                        for ticker in self.tickers:
+                            if ticker in prices:
+                                self.live_prices[ticker] = float(prices[ticker])
+                    else:
+                        # Single ticker case
+                        self.live_prices[self.tickers[0]] = float(data['Close'].iloc[-1])
+            except Exception as e:
+                print(f"⚠️ Real-time polling error: {e}")
+            
+            # Poll every 60 seconds to stay within API grace but provide "live" feel
+            await asyncio.sleep(60)
+
+    async def start_streaming(self):
+        """Simulates live market ticks and broadcasts to UI."""
+        # Start real-time polling thread
+        asyncio.create_task(self._poll_realtime_prices())
+        
+        while True:
+            if not self.manager.active_connections:
+                await asyncio.sleep(2)
+                continue
+
+            # 1. Fetch current PIT snapshot
+            batch = self.lab.snapshot(
+                as_of=self.current_knowledge_time, 
+                tickers=self.tickers, 
+                lookback=self.config['research']['lookback_days']
+            )
+
+            if batch:
+                # Update persistent state
+                self._update_stochastic_metrics()
+                
+                # 2. Extract data for 5 panels
+                payload = {
+                    "timestamp": self.current_knowledge_time.isoformat(),
+                    "spectral": self._get_spectral_data(batch),
+                    "metacognition": self._get_metacognition_data(batch),
+                    "rankings": self._get_ranking_data(batch),
+                    "execution": self._get_execution_data(batch),
+                    "pipeline": self._get_pipeline_data(),
+                    "live_prices": self.live_prices # Include live market quotes
+                }
+
+                # 3. Broadcast
+                await self.manager.broadcast(json.dumps(payload))
+
+            # Move "time" forward by 1 hour per tick for the demo simulation
+            self.current_knowledge_time += timedelta(hours=1)
+            await asyncio.sleep(self.config['ui']['update_interval_ms'] / 1000.0)
 
     def _update_stochastic_metrics(self):
         # Realistic Equity Curve (Random Walk with Drift)
@@ -39,46 +112,6 @@ class DataStreamer:
         current_is = np.random.uniform(2, 6) # BPS
         self.is_history.append(current_is)
         if len(self.is_history) > 20: self.is_history.pop(0)
-
-    async def _get_model(self):
-        """Initializes model based on current lab config."""
-        # Use 32 scales from SpatialPlugin
-        return MultiModalRankNet(scales=32, lookback=63, hidden_dim=64)
-
-    async def start_streaming(self):
-        """Simulates live market ticks and broadcasts to UI."""
-        while True:
-            if not self.manager.active_connections:
-                await asyncio.sleep(2)
-                continue
-
-            # 1. Fetch current PIT snapshot
-            batch = self.lab.snapshot(
-                as_of=self.current_knowledge_time, 
-                tickers=self.tickers, 
-                lookback=63
-            )
-
-            if batch:
-                # Update persistent state
-                self._update_stochastic_metrics()
-                
-                # 2. Extract data for 5 panels
-                payload = {
-                    "timestamp": self.current_knowledge_time.isoformat(),
-                    "spectral": self._get_spectral_data(batch),
-                    "metacognition": self._get_metacognition_data(batch),
-                    "rankings": self._get_ranking_data(batch),
-                    "execution": self._get_execution_data(batch),
-                    "pipeline": self._get_pipeline_data()
-                }
-
-                # 3. Broadcast
-                await self.manager.broadcast(json.dumps(payload))
-
-            # Move "time" forward by 1 hour per tick for the demo
-            self.current_knowledge_time += timedelta(hours=1)
-            await asyncio.sleep(0.5) # Fast scrolling
 
     def _get_spectral_data(self, batch):
         try:
@@ -108,7 +141,7 @@ class DataStreamer:
     def _get_empty_spectral_data(self):
         return {
             "ticker": "WAITING",
-            "cwt": np.zeros((8, 63)).tolist(),
+            "cwt": np.zeros((32, 63)).tolist(),
             "adf_p_value": 1.0,
             "shap_values": {"N/A": 0}
         }
@@ -122,24 +155,20 @@ class DataStreamer:
 
     def _get_ranking_data(self, batch):
         """
-        Aggregates per-ticker scores into a single 'House View' decile ladder.
-        Ensures each ticker appears only once.
+        Aggregates per-ticker scores and binds real-time prices.
         """
-        # Create unique 'House View' per ticker
         ticker_scores = {}
         for i, ticker in enumerate(batch.tickers):
-            # Take the latest score for each ticker in the batch
             ticker_scores[ticker] = float(batch.labels[i])
             
-        # Convert to list of dicts for the UI
         ladder = []
         for ticker, score in ticker_scores.items():
             ladder.append({
                 "ticker": ticker,
-                "score": score
+                "score": score,
+                "live_price": self.live_prices.get(ticker, 0.0)
             })
             
-        # Sort by score descending (Top 10% Longs first)
         ladder.sort(key=lambda x: x['score'], reverse=True)
         
         return {
@@ -148,17 +177,10 @@ class DataStreamer:
         }
 
     def _get_execution_data(self, batch):
-        # Execution Reality Stress Test:
-        # Trigger 'Retune' if IS Variance > 2.0 OR LOB Skew is detected
         is_var = np.var(self.is_history) if self.is_history else 0
-        
-        # Simulate LOB Skew (High energy in far-out bins)
         heatmap = np.random.rand(5, 5)
-        # Structural Skew Detector: Check if far-side slippage exceeds threshold
         lob_skew = np.mean(heatmap[:, -1]) > 0.75 
-        
         is_val = self.is_history[-1] if self.is_history else 0
-        # Multi-factor trigger: High variance (instability) OR Distribution shift
         needs_retune = is_var > 2.0 or lob_skew or is_val > 5.5
 
         return {

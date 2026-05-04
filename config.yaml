@@ -1,0 +1,21 @@
+# UQTS-2026 Global Configuration
+
+universe:
+  tickers: ["AAPL", "MSFT", "GOOG", "SPY", "AMZN", "NFLX", "META", "NVDA"]
+  benchmark: "SPY"
+
+research:
+  lookback_days: 63
+  horizon_days: 21
+  fd_d_param: 0.4
+  start_date: "2022-01-01"
+
+model:
+  hidden_dim: 64
+  epochs: 5
+  lr: 0.001
+
+ui:
+  update_interval_ms: 500
+  stream_start_offset_days: 120
+  enable_realtime_polling: true
