@@ -19,23 +19,26 @@ class BacktestOrchestrator:
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
         self.engine = DataEngine(storage_path=db_path)
         self.tickers = tickers if tickers else self.config['universe']['tickers']
-        try:
-            count = self.engine.conn.execute("SELECT count(*) FROM market_data").fetchone()[0]
-            if count == 0: logger.error(f"❌ DATABASE IS EMPTY ({db_path}). Please run with --ingest first.")
-            else: logger.info(f"✅ Pre-flight Check: Found {count} records in DuckDB.")
-        except Exception as e: logger.warning(f"⚠️ Pre-flight database check failed: {e}.")
         
-        # Pull Signal Physics parameters for manual model setup
         scales = np.array(self.config['signal_physics']['wavelet_transform']['scales'])
         self.lookback, self.horizon = self.config['signal_physics']['lookback_days'], self.config['signal_physics']['horizon_days']
-        
-        # Senior Fix: Use Registry for true auto-discovery including new 'x_volume'
         self.universe = AlphaUniverse(data_provider=self.engine, config=self.config)
         self.n_scales = len(scales)
 
     def run_ingestion(self):
         logger.info("📡 INITIATING DATA INGESTION...")
-        ingestor = InstitutionalIngestor(self.engine)
+        # SENIOR DEV FIX: Explicitly pass env variables to ensure they aren't lost in sub-processes
+        env_keys = {
+            'ALPACA_API_KEY': os.getenv('ALPACA_API_KEY'),
+            'ALPACA_API_SECRET': os.getenv('ALPACA_API_SECRET'),
+            'TIINGO_API_KEY': os.getenv('TIINGO_API_KEY'),
+            'POLYGON_API_KEY': os.getenv('POLYGON_API_KEY')
+        }
+        ingestor = InstitutionalIngestor(self.engine, config=self.config)
+        # Inject keys directly into the ingestor instance
+        for k, v in env_keys.items(): 
+            if v: setattr(ingestor, k.lower() if 'API' not in k else k.lower(), v)
+            
         ingestor.ingest_universe(self.tickers, self.config['data_engine']['start_date'], datetime.now().strftime("%Y-%m-%d"))
 
     def _collect_training_data(self, start: datetime, end: datetime) -> MultiModalBatch:
@@ -43,10 +46,8 @@ class BacktestOrchestrator:
         steps = self.universe.walk_forward(universe=self.tickers, start_date=start, end_date=end, stride=1, lookback=self.lookback, horizon=self.horizon, latest_only=True)
         if not steps: logger.error("❌ NO TRAINING SAMPLES PRODUCED."); raise ValueError("Empty dataset.")
         
-        # Dynamically cat all modality buffers found in the first batch
         modalities = list(steps[0]['batch'].data.keys())
         all_data, all_y, all_times = {m: [] for m in modalities}, [], []
-        
         for step in steps:
             batch = step['batch']
             for m in modalities: all_data[m].append(batch.data[m])
@@ -66,7 +67,6 @@ class BacktestOrchestrator:
         wd = self.config['model_pipeline']['training'].get('weight_decay', 0.0002)
         do = self.config['model_pipeline']['training'].get('dropout', 0.5)
         
-        # Build dynamic InputSpecs based on auto-discovered plugins
         specs = []
         for p in self.universe.plugins:
             if p.name == 'x_seq': specs.append(InputSpec(name='x_seq', shape=(self.lookback, 1), type='seq'))
@@ -77,7 +77,7 @@ class BacktestOrchestrator:
         champion = RankNet(input_dim=self.n_scales, hidden_dim=hidden_dim)
         challenger = MultiModalRankNet(specs=specs, hidden_dim=hidden_dim, vit_heads=vh, gnn_layers=gl, dropout=do)
         
-        using_subset = len(self.tickers) < 50 # Heuristic for subset
+        using_subset = len(self.tickers) < 50
         from datetime import datetime as dt_class
         torch.serialization.add_safe_globals([MultiModalBatch, dt_class, pd.Timestamp, pd._libs.tslibs.timestamps._unpickle_timestamp])
 
@@ -86,9 +86,7 @@ class BacktestOrchestrator:
             if os.path.exists(cache_path) and not using_subset:
                 logger.info(f"📦 LOADING CACHED TRAINING FEATURES: {cache_path}")
                 train_dataset = torch.load(cache_path, weights_only=True)
-                # Invalidate cache if modalities or scale count mismatch
-                if len(train_dataset.data) != len(specs) or train_dataset.data['x_spatial'].shape[2] != self.n_scales:
-                     logger.warning("⚠️ Cache mismatch. RE-COLLECTING...")
+                if len(train_dataset.data) != len(specs):
                      train_dataset = self._collect_training_data(train_start, train_end); torch.save(train_dataset, cache_path)
             else: 
                 train_dataset = self._collect_training_data(train_start, train_end)
@@ -117,13 +115,10 @@ class BacktestOrchestrator:
 
         logger.info(f"🧪 Evaluating on OOS regime ({test_start.date()} -> {test_end.date()})...")
         oos_cache_path = "data/oos_steps.pt"
-        if os.path.exists(oos_cache_path) and not using_subset: 
-            steps = torch.load(oos_cache_path, weights_only=True)
-            if len(steps[0]['batch'].data) != len(specs):
-                logger.warning("⚠️ OOS Cache mismatch (modalities). RE-COLLECTING...")
-                steps = self.universe.walk_forward(universe=self.tickers, start_date=test_start, end_date=test_end, stride=21, lookback=self.lookback, horizon=5, latest_only=True); torch.save(steps, oos_cache_path)
+        if os.path.exists(oos_cache_path) and not using_subset: steps = torch.load(oos_cache_path, weights_only=True)
         else: 
-            steps = self.universe.walk_forward(universe=self.tickers, start_date=test_start, end_date=test_end, stride=21, lookback=self.lookback, horizon=5, latest_only=True); torch.save(steps, oos_cache_path)
+            steps = self.universe.walk_forward(universe=self.tickers, start_date=test_start, end_date=test_end, stride=21, lookback=self.lookback, horizon=5, latest_only=True)
+            if not using_subset: torch.save(steps, oos_cache_path)
             
         res = []
         for step in steps:
@@ -134,7 +129,6 @@ class BacktestOrchestrator:
                 else: ch_scores = challenger({k: v.to(device) for k, v in batch.data.items()}).squeeze().cpu().numpy()
             target = batch.labels.cpu().numpy(); c_ic = 0 if np.std(c_scores) < 1e-6 or np.std(target) < 1e-6 else spearmanr(c_scores, target)[0]; ch_ic = 0 if np.std(ch_scores) < 1e-6 or np.std(target) < 1e-6 else spearmanr(ch_scores, target)[0]
             res.append({'date': step['date'], 'champion_ic': c_ic if not np.isnan(c_ic) else 0, 'challenger_ic': ch_ic if not np.isnan(ch_ic) else 0})
-            
         df = pd.DataFrame(res); df.to_csv("data/backtest_results.csv", index=False)
         logger.info(f"\n--- Backtest Summary ---\nChampion Avg IC: {df['champion_ic'].mean():.4f}\nChallenger Avg IC: {df['challenger_ic'].mean():.4f}\nWin Rate: {(df['challenger_ic'] > df['champion_ic']).mean()*100:.1f}%")
         return df

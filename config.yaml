@@ -102,6 +102,7 @@ universe:
     - MCO
 
 data_engine:
+  provider: "alpaca"                # Institutional Choice
   storage_path: "data/uqts_bitemporal.ddb"
   start_date: "2016-01-01"
   features:
