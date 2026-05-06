@@ -39,8 +39,6 @@ class BacktestOrchestrator:
 
     def _collect_training_data(self, start: datetime, end: datetime) -> MultiModalBatch:
         logger.info(f"📥 Collecting multi-regime training data ({start.date()} -> {end.date()})...")
-        # SENIOR QUANT LOGIC: latest_only=True ensures we only get UNIQUE daily windows (~28k samples).
-        # This prevents the 'redundancy trap' and drastically reduces overfitting.
         steps = self.universe.walk_forward(universe=self.tickers, start_date=start, end_date=end, stride=1, lookback=self.lookback, horizon=self.horizon, latest_only=True)
         if not steps: logger.error("❌ NO TRAINING SAMPLES PRODUCED."); raise ValueError("Empty dataset.")
         all_x_seq, all_x_spatial, all_x_graph, all_y = [], [], [], []
@@ -57,46 +55,64 @@ class BacktestOrchestrator:
         arch_config = self.config['model_pipeline']['architecture']
         hidden_dim, vh, gl = arch_config['hidden_dim'], arch_config['vit_heads'], arch_config['gnn_layers']
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        batch_size = self.config['model_pipeline']['training'].get('batch_size', 8192)
-        wd = self.config['model_pipeline']['training'].get('weight_decay', 0.0001)
+        batch_size = self.config['model_pipeline']['training'].get('batch_size', 1024)
+        wd = self.config['model_pipeline']['training'].get('weight_decay', 0.00005)
         do = self.config['model_pipeline']['training'].get('dropout', 0.3)
+        
         champion = RankNet(input_dim=self.n_scales, hidden_dim=hidden_dim)
         specs = [InputSpec(name='x_seq', shape=(self.lookback, 1), type='seq'), InputSpec(name='x_spatial', shape=(1, self.n_scales, self.lookback), type='spatial'), InputSpec(name='x_graph', shape=(8,), type='graph')]
         challenger = MultiModalRankNet(specs=specs, hidden_dim=hidden_dim, vit_heads=vh, gnn_layers=gl, dropout=do)
+        
         using_subset = len(self.tickers) < len(self.config['universe']['tickers'])
+        
+        # Add security globals for torch.load
+        from datetime import datetime as dt_class
+        torch.serialization.add_safe_globals([MultiModalBatch, dt_class, pd.Timestamp, pd._libs.tslibs.timestamps._unpickle_timestamp])
+
         if not skip_train:
             cache_path = "data/train_dataset.pt"
             if os.path.exists(cache_path) and not using_subset:
                 logger.info(f"📦 LOADING CACHED TRAINING FEATURES: {cache_path}")
-                torch.serialization.add_safe_globals([MultiModalBatch, datetime]); train_dataset = torch.load(cache_path, weights_only=True)
-                # Validation: If the cached dataset is the 'Redundant' 1.8M version, force a re-collect to fix the math.
+                train_dataset = torch.load(cache_path, weights_only=True)
                 if len(train_dataset.labels) > 50000:
-                     logger.warning("⚠️ Cached dataset is REDUNDANT (1.8M). Re-collecting UNIQUE windows for correct math.")
+                     logger.warning("⚠️ Cached dataset is REDUNDANT. Re-collecting UNIQUE windows.")
                      train_dataset = self._collect_training_data(train_start, train_end); torch.save(train_dataset, cache_path)
             else: 
                 train_dataset = self._collect_training_data(train_start, train_end)
                 if not using_subset: torch.save(train_dataset, cache_path)
+            
             nt = len(train_dataset.labels); n_train = int(nt * 0.8); idx = torch.randperm(nt)
             val_dataset = MultiModalBatch(data={k: v[idx[n_train:]] for k, v in train_dataset.data.items()}, labels=train_dataset.labels[idx[n_train:]], tickers=['VAL'] * (nt - n_train), times=[datetime.now()] * (nt - n_train))
             train_dataset = MultiModalBatch(data={k: v[idx[:n_train]] for k, v in train_dataset.data.items()}, labels=train_dataset.labels[idx[:n_train]], tickers=['TRAIN'] * n_train, times=[datetime.now()] * n_train)
+            
             if device.type == 'cuda': logger.info("🚀 MOVING DATASETS TO GPU VRAM..."); train_dataset = train_dataset.to(device); val_dataset = val_dataset.to(device)
+            
             logger.info(f"🛠️ Training on {len(train_dataset.labels)} samples with {len(val_dataset.labels)} validation hold-out...")
             ep, lr, pat = self.config['model_pipeline']['training']['epochs'], self.config['model_pipeline']['training']['lr'], self.config['model_pipeline']['training'].get('early_stopping_patience', 5)
+            
             logger.info("🏆 Training Champion (MLP)...")
             champion.fit((train_dataset.data['x_spatial'][:, 0, :, -1], train_dataset.labels), epochs=ep, lr=lr, device=device, batch_size=batch_size, patience=pat, weight_decay=wd)
+            
             logger.info("🚀 Training Challenger (Multi-Modal)...")
             challenger.fit(train_dataset, epochs=ep, lr=lr, device=device, batch_size=batch_size, patience=pat, weight_decay=wd, val_dataset=val_dataset)
+            
             os.makedirs("models", exist_ok=True); challenger.export("models/challenger_v1.pt"); torch.save(champion.state_dict(), "models/champion_baseline.pt")
             logger.success("✅ Training complete. Models exported.")
         else:
-            logger.info("⏭️ SKIPPING TRAINING. Loading models..."); torch.serialization.add_safe_globals([MultiModalBatch, datetime]); challenger = torch.jit.load("models/challenger_v1.pt").to(device)
+            logger.info("⏭️ SKIPPING TRAINING. Loading models...")
+            challenger = torch.jit.load("models/challenger_v1.pt").to(device)
             if os.path.exists("models/champion_baseline.pt"): champion.load_state_dict(torch.load("models/champion_baseline.pt", weights_only=True))
             champion.to(device)
+
         logger.info(f"🧪 Evaluating on OOS regime ({test_start.date()} -> {test_end.date()})...")
         oos_cache_path = "data/oos_steps.pt"
-        if os.path.exists(oos_cache_path) and not using_subset: logger.info(f"📦 LOADING CACHED BACKTEST DATA: {oos_cache_path}"); steps = torch.load(oos_cache_path, weights_only=True)
-        else: steps = self.universe.walk_forward(universe=self.tickers, start_date=test_start, end_date=test_end, stride=21, lookback=self.lookback, horizon=5, latest_only=True)
-        if not using_subset: torch.save(steps, oos_cache_path)
+        if os.path.exists(oos_cache_path) and not using_subset: 
+            logger.info(f"📦 LOADING CACHED BACKTEST DATA: {oos_cache_path}")
+            steps = torch.load(oos_cache_path, weights_only=True)
+        else: 
+            steps = self.universe.walk_forward(universe=self.tickers, start_date=test_start, end_date=test_end, stride=21, lookback=self.lookback, horizon=5, latest_only=True)
+            if not using_subset: torch.save(steps, oos_cache_path)
+            
         res = []
         for step in steps:
             batch = step['batch'].to(device) if device.type == 'cuda' else step['batch']
@@ -106,6 +122,7 @@ class BacktestOrchestrator:
                 else: ch_scores = challenger({k: v.to(device) for k, v in batch.data.items()}).squeeze().cpu().numpy()
             target = batch.labels.cpu().numpy(); c_ic = 0 if np.std(c_scores) < 1e-6 or np.std(target) < 1e-6 else spearmanr(c_scores, target)[0]; ch_ic = 0 if np.std(ch_scores) < 1e-6 or np.std(target) < 1e-6 else spearmanr(ch_scores, target)[0]
             res.append({'date': step['date'], 'champion_ic': c_ic if not np.isnan(c_ic) else 0, 'challenger_ic': ch_ic if not np.isnan(ch_ic) else 0})
+            
         df = pd.DataFrame(res); df.to_csv("data/backtest_results.csv", index=False)
         logger.info(f"\n--- Backtest Summary ---\nChampion Avg IC: {df['champion_ic'].mean():.4f}\nChallenger Avg IC: {df['challenger_ic'].mean():.4f}\nWin Rate: {(df['challenger_ic'] > df['champion_ic']).mean()*100:.1f}%")
         return df
