@@ -1,78 +1,78 @@
 import os
 import pandas as pd
-import yfinance as yf
 import requests
-import yaml
 from datetime import datetime, timedelta
 from research_lab.data_engine import DataEngine
 from qts_core.logger import logger
 
 class InstitutionalIngestor:
+    """
+    Production-grade data ingestor for Alpaca Market Data V2.
+    Optimized for batch symbol requests and paginated historical retrieval.
+    """
     def __init__(self, data_engine: DataEngine, config: dict = None):
         self.engine = data_engine
         self.config = config or {}
-        self.provider = self.config.get('data_engine', {}).get('provider', os.getenv("DATA_PROVIDER", "YFINANCE")).upper()
+        self.provider = self.config.get('data_engine', {}).get('provider', 'ALPACA').upper()
         
-        # SENIOR DEV FIX: Support multiple naming conventions for Alpaca keys
-        self.api_key = os.getenv("ALPACA_API_KEY") or os.getenv("ALPACA_KEY_ID")
-        self.api_secret = os.getenv("ALPACA_API_SECRET") or os.getenv("ALPACA_SECRET_KEY")
+        # Strict Credential Mapping
+        self.api_key = os.getenv("ALPACA_API_KEY")
+        self.api_secret = os.getenv("ALPACA_SECRET_KEY")
+        self.base_url = "https://data.alpaca.markets/v2/stocks/bars"
 
-        if self.provider == "ALPACA":
-            if not self.api_key or not self.api_secret:
-                logger.error("❌ ALPACA CREDENTIALS INCOMPLETE")
-                if not self.api_key: logger.error("  > Missing ALPACA_API_KEY")
-                if not self.api_secret: logger.error("  > Missing ALPACA_SECRET_KEY (or ALPACA_API_SECRET)")
-            else:
-                logger.info(f"InstitutionalIngestor: Connected to Alpaca (Key: {self.api_key[:4]}...)")
+        if not self.api_key or not self.api_secret:
+            logger.error("❌ ALPACA CREDENTIALS NOT FOUND in .env (Required: ALPACA_API_KEY, ALPACA_SECRET_KEY)")
+        else:
+            logger.info(f"InstitutionalIngestor: Initialized for {self.provider}")
 
     def ingest_universe(self, tickers: list, start_date: str, end_date: str):
         try:
-            existing_tickers = self.engine.conn.execute("SELECT DISTINCT ticker FROM market_data").fetchall()
-            existing_tickers = [t[0] for t in existing_tickers]
-            missing_tickers = [t for t in tickers if t not in existing_tickers]
-            if not missing_tickers:
-                logger.info(f"✅ CACHE HIT: All tickers exist in DuckDB.")
+            existing = [t[0] for t in self.engine.conn.execute("SELECT DISTINCT ticker FROM market_data").fetchall()]
+            missing = [t for t in tickers if t not in existing]
+            if not missing:
+                logger.info("✅ ALL TICKERS PRESENT: Skipping ingestion.")
                 return
-        except Exception: missing_tickers = tickers
+        except Exception: missing = tickers
 
-        logger.info(f"📡 FETCHING {self.provider} DATA: {len(missing_tickers)} tickers...")
+        logger.info(f"📡 Alpaca Ingestion: Fetching {len(missing)} tickers...")
+        headers = {"APCA-API-KEY-ID": self.api_key, "APCA-API-SECRET-KEY": self.api_secret}
         all_data = []
-        
-        if self.provider == "ALPACA":
-            headers = {"APCA-API-KEY-ID": self.api_key, "APCA-API-SECRET-KEY": self.api_secret}
-            chunk = missing_tickers[:100]
-            # Try all data endpoints
-            combos = [
-                ("https://data.alpaca.markets/v2/stocks/bars", "iex"),
-                ("https://data.alpaca.markets/v2/stocks/bars", "sip"),
-                ("https://paper-api.alpaca.markets/v2/stocks/bars", "iex")
-            ]
-            for url, feed in combos:
-                params = {"symbols": ",".join(chunk), "timeframe": "1Day", "start": start_date, "end": end_date, "adjustment": "raw", "feed": feed}
-                resp = requests.get(url, headers=headers, params=params)
-                if resp.status_code == 200:
-                    logger.info(f"✅ SUCCESS: {url} [{feed}]")
-                    data = resp.json().get('bars', {})
-                    for ticker, bars in data.items():
-                        for bar in bars:
-                            all_data.append({'ticker': ticker, 'event_time': pd.to_datetime(bar['t']), 'knowledge_time': pd.to_datetime(bar['t']) + timedelta(hours=16),
-                                           'open': float(bar['o']), 'high': float(bar['h']), 'low': float(bar['l']), 'close': float(bar['c']),
-                                           'volume': int(bar['v']), 'is_correction': False})
+
+        # Batch symbols in chunks of 100 to stay within URI limits
+        for i in range(0, len(missing), 100):
+            chunk = missing[i : i + 100]
+            page_token = None
+            
+            while True:
+                params = {
+                    "symbols": ",".join(chunk), "timeframe": "1Day",
+                    "start": start_date, "end": end_date,
+                    "adjustment": "raw", "feed": "iex", "limit": 10000
+                }
+                if page_token: params["page_token"] = page_token
+                
+                resp = requests.get(self.base_url, headers=headers, params=params)
+                if resp.status_code != 200:
+                    logger.error(f"Alpaca API Error: {resp.status_code} - {resp.text}")
                     break
-                else:
-                    logger.warning(f"❌ FAILED: {url} [{feed}] -> {resp.status_code}")
-        
-        elif self.provider == "TIINGO":
-            tiingo_key = os.getenv("TIINGO_API_KEY")
-            for ticker in missing_tickers:
-                url = f"https://api.tiingo.com/tiingo/daily/{ticker}/prices?startDate={start_date}&endDate={end_date}&token={tiingo_key}"
-                resp = requests.get(url)
-                if resp.status_code == 200:
-                    for bar in resp.json():
-                        all_data.append({'ticker': ticker, 'event_time': pd.to_datetime(bar['date']), 'knowledge_time': pd.to_datetime(bar['date']) + timedelta(hours=16),
-                                       'open': float(bar['open']), 'high': float(bar['high']), 'low': float(bar['low']), 'close': float(bar['close']),
-                                       'volume': int(bar['volume']), 'is_correction': False})
-        
+                
+                res_json = resp.json()
+                bars = res_json.get('bars', {})
+                if not bars: break
+
+                for ticker, ticker_bars in bars.items():
+                    for bar in ticker_bars:
+                        all_data.append({
+                            'ticker': ticker, 'event_time': pd.to_datetime(bar['t']),
+                            'knowledge_time': pd.to_datetime(bar['t']) + timedelta(hours=16),
+                            'open': float(bar['o']), 'high': float(bar['h']),
+                            'low': float(bar['l']), 'close': float(bar['c']),
+                            'volume': int(bar['v']), 'is_correction': False
+                        })
+                
+                page_token = res_json.get('next_page_token')
+                if not page_token: break
+
         if all_data:
             self.engine.insert_dataframe(pd.DataFrame(all_data))
-            logger.success(f"✅ INGESTION COMPLETE: {len(all_data)} records loaded.")
+            logger.success(f"✅ INGESTION COMPLETE: {len(all_data)} records stored in DuckDB.")
