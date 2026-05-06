@@ -81,16 +81,39 @@ uv run python run.py lab --train --test-subset
 ```
 
 ### **Phase 4: Production Deployment**
-Launch the inference worker and mission control.
+The system uses a Redis Pub/Sub architecture. You must start the backend inference engine (which generates signals and/or trades) and the Cockpit UI server separately.
 
-1. **Start Inference Worker**:
-   ```bash
-   uv run python run.py prod
-   ```
-2. **Start UI Backend**:
+**Prerequisite:** Ensure Redis is installed and running (`redis-server`).
+
+**Option A: Simulation Mode (Shadow Trading)**
+Generates real signals and simulates OMS execution for the UI. No real trades are placed.
+```bash
+uv run python run.py prod
+```
+
+**Option B: Live Paper Trading (Alpaca)**
+Executes real paper trades against the Alpaca API. Pulls actual account capital and P&L.
+*Ensure `ALPACA_API_KEY` and `ALPACA_SECRET_KEY` are in your `.env`.*
+```bash
+uv run python run.py live
+```
+
+### **Phase 5: Mission Control UI**
+Once the inference worker (prod or live) is running, launch the frontend interfaces.
+
+1. **Start the UI Backend (WebSocket Streamer)**:
+   Open a new terminal window:
    ```bash
    uv run python run.py ui
    ```
+2. **Start the React Frontend**:
+   Open a third terminal window:
+   ```bash
+   cd cockpit_frontend
+   npm install
+   npm run dev
+   ```
+   Navigate to `http://localhost:5173` in your browser.
 
 ## 5. Google Colab Quickstart
 ```python
