@@ -3,11 +3,14 @@ import os
 import argparse
 from datetime import datetime
 from qts_core.logger import logger
+from dotenv import load_dotenv
 
-# SENIOR DEV PATTERN: Programmatic Path Discovery
+# SENIOR DEV PATTERN: Programmatic Path Discovery & Env Loading
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
-if ROOT_DIR not in sys.path:
-    sys.path.append(ROOT_DIR)
+if ROOT_DIR not in sys.path: sys.path.append(ROOT_DIR)
+
+# Explicitly load .env file
+load_dotenv(os.path.join(ROOT_DIR, ".env"))
 
 def main():
     parser = argparse.ArgumentParser(description="UQTS-2026 Unified Execution Muscle")
