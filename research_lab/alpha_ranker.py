@@ -58,12 +58,11 @@ class RankNet(nn.Module):
         self.to(device); self.train(); optimizer = optim.Adam(self.parameters(), lr=lr, weight_decay=weight_decay)
         scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
         criterion = PairwiseRankLoss(); scaler = torch.amp.GradScaler('cuda', enabled=(device.type == 'cuda'))
-
         if hasattr(dataset, 'data') and hasattr(dataset, 'labels'):
             ns = len(dataset.labels); abs_ = min(batch_size, ns); nb = ns // abs_
             if nb == 0: nb, abs_ = 1, ns
             bl, wait = float('inf'), 0
-            log_interval = max(1, nb // 10) # Log 10 times per epoch
+            log_interval = max(1, nb // 10)
             for epoch in range(epochs):
                 tl, indices = 0, torch.randperm(ns, device=device)
                 for b in range(nb):
@@ -74,13 +73,9 @@ class RankNet(nn.Module):
                         ini = {k: v[idx][ii] for k, v in dataset.data.items()}; inj = {k: v[idx][jj] for k, v in dataset.data.items()}
                         si, sj = self.forward(ini), self.forward(inj)
                         loss = criterion(si, sj, torch.sign(yb[ii] - yb[jj]).unsqueeze(1))
-                    scaler.scale(loss).backward()
-                    scaler.unscale_(optimizer); torch.nn.utils.clip_grad_norm_(self.parameters(), 1.0)
+                    scaler.scale(loss).backward(); scaler.unscale_(optimizer); torch.nn.utils.clip_grad_norm_(self.parameters(), 1.0)
                     scaler.step(optimizer); scaler.update(); tl += loss.item()
-                    
-                    if verbose and b % log_interval == 0:
-                        logger.info(f"   > Epoch {epoch+1} Progress: {100 * b // nb}% | Current Batch Loss: {loss.item():.4f}")
-
+                    if verbose and b % log_interval == 0: logger.info(f"   > Epoch {epoch+1} Progress: {100 * b // nb}% | Loss: {loss.item():.4f}")
                 scheduler.step(); al = tl / max(1, nb); v_msg = ""
                 if val_dataset:
                     self.eval()
@@ -88,7 +83,7 @@ class RankNet(nn.Module):
                         v_ns = len(val_dataset.labels); v_idx = torch.randperm(v_ns, device=device)[:min(batch_size, v_ns)]
                         if len(v_idx) >= 2:
                             vii, vjj = torch.randperm(len(v_idx), device=device), torch.randperm(len(v_idx), device=device)
-                            v_ini = {k: v[v_idx][vii] for k, v in val_dataset.data.items()}; v_inj = {k: v[v_idx][vjj] for k, v in val_dataset.data.items()}
+                            v_ini, v_inj = {k: v[v_idx][vii] for k, v in val_dataset.data.items()}, {k: v[v_idx][vjj] for k, v in val_dataset.data.items()}
                             v_loss = criterion(self.forward(v_ini), self.forward(v_inj), torch.sign(val_dataset.labels[v_idx][vii] - val_dataset.labels[v_idx][vjj]).unsqueeze(1))
                             v_msg = f" | Val Loss: {v_loss.item():.4f}"
                     self.train()
@@ -96,8 +91,28 @@ class RankNet(nn.Module):
                 if al < bl: bl, wait = al, 0
                 else:
                     wait += 1
-                    if wait >= patience: logger.warning(f"Early stopping triggered at epoch {epoch+1}"); break
+                    if wait >= patience: logger.warning(f"Early stopping at epoch {epoch+1}"); break
             return
+        if isinstance(dataset, tuple):
+            X_all, y_all = dataset; ns = len(y_all); abs_ = min(batch_size, ns); nb = ns // abs_
+            if nb == 0: nb, abs_ = 1, ns
+            bl, wait = float('inf'), 0
+            for epoch in range(epochs):
+                tl, indices = 0, torch.randperm(ns, device=device)
+                for b in range(nb):
+                    optimizer.zero_grad(); idx = indices[b*abs_ : (b+1)*abs_]
+                    if len(idx) < 2: continue
+                    X, y = X_all[idx].to(device), y_all[idx].to(device)
+                    ii, jj = torch.randperm(len(idx)), torch.randperm(len(idx))
+                    with torch.amp.autocast('cuda', enabled=(device.type == 'cuda')):
+                        loss = criterion(self.forward(X[ii]), self.forward(X[jj]), torch.sign(y[ii] - y[jj]).unsqueeze(1))
+                    scaler.scale(loss).backward(); scaler.step(optimizer); scaler.update(); tl += loss.item()
+                scheduler.step(); al = tl / max(1, nb)
+                if verbose: logger.info(f"   [Epoch {epoch+1}/{epochs}] Loss: {al:.6f}")
+                if al < bl: bl, wait = al, 0
+                else:
+                    wait += 1
+                    if wait >= patience: break
 
     @torch.jit.ignore
     def predict_dataset(self, dataset, batch_size: int = 1024):
