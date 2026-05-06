@@ -31,5 +31,9 @@ All core architectural changes described in the original PRD have been applied. 
 - `mpc_solver.hpp` and `kelly_sizer.hpp` provide the C++ structures for MPC and Multivariate Kelly sizing. 
 - *Note: Integration with OSQP/Eigen library remains to be compiled into the system.*
 
-## 5. End-to-End Production Capital Test (HITL)
+## 5. Quad-Modality & Learned Gating (NEW UPGRADE)
+- **High-Resolution Alpha**: Integration of LSTM, ViT, GNN, and Volume encoders into a unified model.
+- **Regime-Aware Fusion**: Learned gating layer that dynamically weights sensors, allowing the model to adapt to different market volatility regimes.
+
+## 6. End-to-End Production Capital Test (HITL)
 - Ready for staging deployment and stress testing in Alpaca Paper Environment.

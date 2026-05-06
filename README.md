@@ -9,7 +9,7 @@ The system follows a 3-tier production-grade architecture.
 ### Data Pipeline
 ```mermaid
 graph LR
-    A[Yahoo Finance / Polygon.io] -- API / Unadjusted Ticks --> B(InstitutionalIngestor: Python)
+    A[Yahoo Finance / Polygon.io / Tiingo] -- API / Unadjusted Ticks --> B(InstitutionalIngestor: Python)
     B -- DataFrame Insertion --> C[(DuckDB: data/uqts_bitemporal.ddb)]
     C -- SQL PIT View --> D[AlphaUniverse: Python]
 ```
@@ -19,7 +19,7 @@ graph LR
 graph TD
     A[(DuckDB)] -- "PIT Sliced Window" --> B[InferenceWorker: Python/PyTorch]
     B -- Wavelet/GNN Transf. --> C[MultiModalRankNet: PyTorch]
-    B -- RankNet Inference --> D[AlphaRanker: TorchScript]
+    C -- "Learned Modality Gating" --> D[AlphaRanker: TorchScript]
     D -- Bayesian Belief --> E[MetaController: Python]
     E -- JSON Payloads --> F[(Redis: Pub/Sub)]
 ```
@@ -32,32 +32,30 @@ graph TD
 ```
 
 ## 2. Key Capabilities
-- **Institutional Scale**: Handlers for 10k+ stocks via Batch PIT DataEngine decoupling.
+- **Institutional Scale**: Handlers for 100+ stocks (diversified S&P 500 universe) via Batch PIT DataEngine.
 - **Bi-temporal Isolation**: Strict separation of *Event Time* and *Knowledge Time*.
-- **Triple-Modality Fusion**: LSTM (Temporal Signal) + ViT (Spatial Signal) + GNN (Relational/Sector Signal).
+- **Quad-Modality Fusion**: LSTM (Temporal), ViT (Spatial/Wavelet), GNN (Relational), and Volume Dynamics.
+- **Learned Gating Layer**: Attention-style gating mechanism that dynamically weights modalities based on market regime.
 - **VRAM Optimizations**: Resident dataset residency in GPU for O(1) training throughput.
 - **TorchScript Serialization**: Models serialized for cross-language consistency (Python -> C++).
-- **Sub-100μs Muscle**: Native C++26 execution (experimental headers in `execution_muscle/`).
 
 ## 3. Key Dependencies
 - **Core ML**: `torch`, `timm`, `einops`, `scikit-learn`
 - **Math/Signal**: `numpy`, `pandas`, `scipy`, `statsmodels`, `pywavelets`
-- **Infrastructure**: `duckdb`, `redis`, `loguru`
+- **Infrastructure**: `duckdb`, `redis`, `loguru`, `polygon-api-client`
 - **Web/UI**: `fastapi`, `uvicorn`, `streamlit`, `plotly`
 
 ## 4. Step-by-Step Implementation Guide
 
-Follow this sequential workflow to initialize, verify, and deploy the QTS2026 platform.
-
 ### **Phase 1: Environment & Data**
 1. **Initialize Project**:
    ```bash
-   git clone https://github.com/your-username/QTS2026.git
+   git clone https://github.com/abhishek-jana/QTS2026.git
    cd QTS2026
    uv sync
    ```
 2. **Setup Credentials**:
-   Create a `.env` file (see example in `docs/PRD_PRODUCTION_GRADE.md`).
+   Create a `.env` file with `POLYGON_API_KEY` or `TIINGO_API_KEY` for institutional data.
 
 ### **Phase 2: Signal Physics Audit**
 Verify the mathematical integrity of the signal pipeline (Stationarity & Spectral Energy).
@@ -69,17 +67,16 @@ uv run python -m research_lab.verify_physics
 Use the unified entry point for all research tasks.
 
 **For First-Time Runners / Google Colab:**
-Download historical data and start training in one pass.
 ```bash
 uv run python run.py lab --ingest --train
 ```
 
 **For Regular Runs (Incremental):**
 ```bash
-# Run training on existing data (2018-2022)
+# Run training on unique daily windows (2016-2022)
 uv run python run.py lab --train
 
-# Run a quick smoke test on 3 tickers (SPY, NVDA, TSM)
+# Run a quick smoke test on a subset of tickers
 uv run python run.py lab --train --test-subset
 ```
 
@@ -96,7 +93,6 @@ Launch the inference worker and mission control.
    ```
 
 ## 5. Google Colab Quickstart
-If you are running in a notebook, use these cells for a friction-less setup:
 ```python
 # Cell 1: Install UV
 !pip install uv
@@ -107,9 +103,9 @@ If you are running in a notebook, use these cells for a friction-less setup:
 ```
 
 ## 6. Maintenance & Operations
-- **Observability**: System logs are stored in `logs/system.log` with automatic rotation.
-- **Optimization Log**: Refer to **`docs/RESEARCH_OPTIMIZATION_LOG.md`** for performance baselines and the hardware roadmap.
-- **Tests**: Run the full regression suite: `uv run pytest`.
+- **Temporal Splitting**: Training/Validation split is performed temporally (Hold-out: Late 2022) to prevent forward-looking bias.
+- **Observability**: System logs are stored in `logs/system.log` with sub-epoch progress reporting.
+- **Optimization Log**: Refer to **`docs/RESEARCH_OPTIMIZATION_LOG.md`** for scaling benchmarks.
 
 ## 7. Directory Structure
 - `/research_lab`: Alpha orchestrator, core math, and discovery notebooks.
@@ -118,7 +114,7 @@ If you are running in a notebook, use these cells for a friction-less setup:
 - `/cockpit_backend`: FastAPI WebSocket streamer.
 - `/cockpit_frontend`: React/Tailwind high-density Mission Control.
 - `/qts_core`: Centralized logging and shared infrastructure.
-- `/data`: Local DuckDB storage and feature caches.
+- `/data`: Local DuckDB storage (`uqts_bitemporal.ddb`) and feature caches.
 - `/models`: Serialized TorchScript binaries.
 
 ---
