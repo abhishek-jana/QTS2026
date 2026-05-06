@@ -252,6 +252,7 @@ class InferenceWorker:
                     "institutional": {
                         "capital": float(self.starting_capital * (1.0 + self.ls_equity_curve[-1])),
                         "pnl": float(self.starting_capital * self.ls_equity_curve[-1]),
+                        "pnl_pct": float(self.ls_equity_curve[-1] * 100.0),
                         "gross_exposure": float(len(ladder) * 2.1), 
                         "net_exposure": float(sum(s['exposure'] for s in sector_stats.values())),
                         "sector_exposure": sector_stats,
