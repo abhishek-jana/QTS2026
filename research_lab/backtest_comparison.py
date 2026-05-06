@@ -15,7 +15,7 @@ from scipy.stats import spearmanr
 class BacktestOrchestrator:
     def __init__(self, tickers=None):
         with open("config.yaml", "r") as f: self.config = yaml.safe_load(f)
-        db_path = self.config['data_engine']['db_path']
+        db_path = self.config['data_engine']['storage_path']
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
         self.engine = DataEngine(storage_path=db_path)
         self.tickers = tickers if tickers else self.config['universe']['tickers']
