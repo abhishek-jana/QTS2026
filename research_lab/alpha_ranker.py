@@ -14,10 +14,15 @@ class InputSpec:
     type: str
 
 class LightweightViT(nn.Module):
-    def __init__(self, img_size=(32, 63), patch_size=(32, 9), in_chans=1, embed_dim=64, depth=2, num_heads=4, dropout=0.1):
+    def __init__(self, img_size=(8, 63), patch_size=(8, 9), in_chans=1, embed_dim=64, depth=2, num_heads=4, dropout=0.1):
         super().__init__()
+        # SENIOR FIX: Ensure patch_size is compatible with img_size
         self.img_size, self.patch_size, self.in_chans = img_size, patch_size, in_chans
         hp, wp = img_size[0] // patch_size[0], img_size[1] // patch_size[1]
+        
+        # Guard against zero patches
+        hp = max(1, hp); wp = max(1, wp)
+        
         self.patch_dim = patch_size[0] * patch_size[1] * in_chans
         self.patch_embed = nn.Linear(self.patch_dim, embed_dim)
         self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
@@ -28,6 +33,10 @@ class LightweightViT(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B = x.shape[0]; p1, p2, C = self.patch_size[0], self.patch_size[1], self.in_chans
         hp, wp = self.img_size[0] // p1, self.img_size[1] // p2
+        # Safety for small images
+        if hp == 0 or wp == 0:
+             x = F.interpolate(x, size=(max(p1, self.img_size[0]), max(p2, self.img_size[1])))
+             hp, wp = x.shape[2] // p1, x.shape[3] // p2
         x = x.view(B, C, hp, p1, wp, p2).permute(0, 2, 4, 3, 5, 1).contiguous().view(B, hp * wp, -1)
         x = self.patch_embed(x)
         x = torch.cat((self.cls_token.expand(B, -1, -1), x), dim=1) + self.pos_embed
@@ -73,7 +82,7 @@ class RankNet(nn.Module):
                     if len(idx) < 2: continue
                     yb = dataset.labels[idx]; ii, jj = torch.randperm(len(idx), device=device), torch.randperm(len(idx), device=device)
                     with torch.amp.autocast('cuda', enabled=(device.type == 'cuda')):
-                        ini = {k: v[idx][ii].detach() for k, v in dataset.data.items()}; inj = {k: v[idx][jj].detach() for k, v in dataset.data.items()}
+                        ini = {k: v[idx][ii] for k, v in dataset.data.items()}; inj = {k: v[idx][jj] for k, v in dataset.data.items()}
                         si, sj = self.forward(ini), self.forward(inj)
                         loss = criterion(si, sj, torch.sign(yb[ii] - yb[jj]).unsqueeze(1))
                     scaler.scale(loss).backward()
@@ -82,29 +91,26 @@ class RankNet(nn.Module):
                 
                 scheduler.step()
                 al = tl / max(1, nb)
-                
-                # FIX: Correct Validation Logic
                 v_msg = ""
                 if val_dataset:
                     self.eval()
                     with torch.no_grad(), torch.amp.autocast('cuda', enabled=(device.type == 'cuda')):
                         v_ns = len(val_dataset.labels)
-                        # Use a small random sample from validation set for speed
                         v_idx = torch.randperm(v_ns, device=device)[:min(batch_size, v_ns)]
                         if len(v_idx) >= 2:
                             vii, vjj = torch.randperm(len(v_idx), device=device), torch.randperm(len(v_idx), device=device)
                             v_ini = {k: v[v_idx][vii] for k, v in val_dataset.data.items()}
                             v_inj = {k: v[v_idx][vjj] for k, v in val_dataset.data.items()}
-                            v_si, v_sj = self.forward(v_ini), self.forward(v_inj)
-                            v_loss = criterion(v_si, v_sj, torch.sign(val_dataset.labels[v_idx][vii] - val_dataset.labels[v_idx][vjj]).unsqueeze(1))
+                            v_loss = criterion(self.forward(v_ini), self.forward(v_inj), torch.sign(val_dataset.labels[v_idx][vii] - val_dataset.labels[v_idx][vjj]).unsqueeze(1))
                             v_msg = f" | Val Loss: {v_loss.item():.4f}"
                     self.train()
 
                 if verbose: logger.info(f"Epoch {epoch+1}/{epochs} - Loss: {al:.6f}{v_msg}")
                 if al < bl: bl, wait = al, 0
-                else: wait += 1
-                if wait >= patience:
-                    if verbose: logger.success(f"Early stopping at epoch {epoch+1}"); break
+                else:
+                    wait += 1
+                    if wait >= patience:
+                        if verbose: logger.success(f"Early stopping at epoch {epoch+1}"); break
             return
 
     @torch.jit.ignore
@@ -139,7 +145,10 @@ class MultiModalRankNet(RankNet):
         vh, gl = kwargs.get('vit_heads', 4), kwargs.get('gnn_layers', 2)
         for spec in specs:
             if spec.type == 'seq': self.encoders[spec.name] = nn.LSTM(input_size=spec.shape[-1], hidden_size=hidden_dim, num_layers=2, batch_first=True, dropout=dropout)
-            elif spec.type == 'spatial': self.encoders[spec.name] = LightweightViT(img_size=spec.shape[1:], patch_size=(spec.shape[1], 9), in_chans=spec.shape[0], embed_dim=hidden_dim, num_heads=vh, dropout=dropout)
+            elif spec.type == 'spatial':
+                # FIXED: Dynamically set patch size based on image height (Scales)
+                img_h = spec.shape[1]
+                self.encoders[spec.name] = LightweightViT(img_size=spec.shape[1:], patch_size=(img_h, 9), in_chans=spec.shape[0], embed_dim=hidden_dim, num_heads=vh, dropout=dropout)
             elif spec.type == 'graph': self.encoders[spec.name] = LightweightGNN(in_features=spec.shape[0], embed_dim=hidden_dim, depth=gl)
     def forward(self, inputs: Dict[str, torch.Tensor]) -> torch.Tensor:
         embs = []
