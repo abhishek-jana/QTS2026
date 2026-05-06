@@ -202,78 +202,89 @@ const MissionManual = ({ isOpen, onClose }) => {
   if (!isOpen) return null;
   const sections = [
     { 
-      title: "1. Spectral & Signal Viewer (Telemetry)", 
+      title: "1. Spectral Physics (4 Instruments)", 
       items: [
-        { label: "Price Chart", detail: "High-resolution OHLCV candles synchronized to Point-in-Time Knowledge time. Represents the 'Ground Truth' for alpha signals." },
-        { label: "Wavelet Spectrogram", detail: "Continuous Wavelet Transform (CWT) using Morlet kernels. Y-axis represents frequency (scale), and brightness indicates energy density at that resolution. High energy at lower scales often precedes volatility breakouts." }
+        { label: "Price Chart", detail: "Real-time OHLCV candles synced to point-in-time knowledge. The 'Ground Truth' layer." },
+        { label: "Wavelet Heatmap", detail: "CWT Spectrogram. Brightness = Energy. Lower scales (top) = High frequency volatility; Higher scales (bottom) = Structural trends." },
+        { label: "ADF p-value", detail: "Augmented Dickey-Fuller stationarity test. Threshold: < 0.05. High values indicate non-stationary 'fluid' price action." },
+        { label: "Alpha State", detail: "READY indicates the neural engine has locked onto a valid spectral energy pulse for the current ticker." }
       ] 
     },
     { 
-      title: "2. Neural Interpretability", 
+      title: "2. Neural Logic (1 Instrument)", 
       items: [
-        { label: "Neural SHAP Fusion", detail: "Bridges latent modalities (Spatial, Temporal, Graph) to human-readable factors. High Momentum weighting suggests trend-following dominance, while high Volatility weighting indicates regime-shift detection." },
-        { label: "ADF p-value", detail: "Augmented Dickey-Fuller test for stationarity. Signals with p > 0.05 are considered non-stationary and carry high 'drift' risk. Ideally, values should be < 0.01." }
+        { label: "SHAP Fusion", detail: "Bridges latent dimensions (Spatial/Temporal) to factors. Momentum = Temporal memory; Volatility = Spatial variance; Sentiment = Graph-based sector rotation." }
       ] 
     },
     { 
-      title: "3. Metacognition & Risk Control", 
+      title: "3. Metacognition (3 Instruments)", 
       items: [
-        { label: "Bayesian Belief", detail: "A real-time confidence score P(Valid | Data). Values < 60% trigger automated position downsizing. Above 80% indicates high regime alignment." },
-        { label: "Manifold Drift", detail: "t-SNE projection of the live market manifold vs. training centroids. If 'Live' dots (crosses) deviate significantly from 'Base' dots (circles), the model is encountering OOS (Out-Of-Sample) micro-regimes." }
+        { label: "Belief Score", detail: "Bayesian confidence metric P(Valid | Data). < 60% triggers automated downsizing; > 80% confirms regime alignment." },
+        { label: "Manifold Drift", detail: "t-SNE projection. Circles = Training centroids; Crosses = Live market state. Separation indicates Out-Of-Sample (OOS) drift." },
+        { label: "Cumulative Gain", detail: "Integrates alpha performance over the session. A flattening curve signals alpha decay or regime exhaustion." }
       ] 
     },
     { 
-      title: "4. Execution Muscle", 
+      title: "4. Market Dynamics (3 Instruments)", 
       items: [
-        { label: "IS (BPS)", detail: "Implementation Shortfall in Basis Points. Measures the distance between arrival price and fill price. High IS (> 5bps) indicates toxic flow or poor liquidity management." },
-        { label: "OMS Queue", detail: "Live status of the C++26 Order Management System. FILLED orders are committed to ledger; WORKING orders are active in the market; REJECTED orders indicate risk-limit breaches." }
+        { label: "Decile Ladder", detail: "Cross-sectional Z-score rankings. Longs (Top) vs. Shorts (Bottom) based on relative alpha conviction." },
+        { label: "Sector Matrix", detail: "Interactive grid showing industrial exposure. Clicking a block filters the Decile Ladder to that specific sector." },
+        { label: "L/S Spread", detail: "Line chart tracking the cumulative return delta between the Top and Bottom deciles. Measures portfolio alpha." }
       ] 
     },
     { 
-      title: "5. Operational Protocol", 
+      title: "5. Execution Muscle (5 Instruments)", 
       items: [
-        { label: "Step 1: Filter", detail: "Use the Sector Matrix to identify industrial clusters with high cumulative conviction (α)." },
-        { label: "Step 2: Hydrate", detail: "Click a ticker in the Ranking Ladder to hydrate the Spectral Telemetry. Verify that Energy Pulses align with the SHAP Momentum factors." },
-        { label: "Step 3: Monitor", detail: "Watch the L/S Equity Spread. A narrowing spread suggests alpha decay; check the Metacognition panel for drift alerts." }
+        { label: "IS (BPS)", detail: "Implementation Shortfall. Gap between arrival price and fill price. Values > 5bps suggest toxic flow or low liquidity." },
+        { label: "OMS Counters", detail: "Real-time FILLED / WORKING / REJECTED order counts. REJECTED indicates risk-limit breaches." },
+        { label: "Order Stream", detail: "Live scrolling log of every execution attempt, showing side, quantity, and timestamp." },
+        { label: "Slippage Matrix", detail: "5x5 dot grid mapping liquidity distribution. Darker dots = higher impact; Brighter dots = efficient fills." },
+        { label: "Sharpe Comparison", detail: "Real-time A/B test: Champion (V1) vs Challenger (V2). Tracks which model version is winning the current regime." }
       ] 
     }
   ];
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/95 backdrop-blur-md p-4 font-mono">
-      <div className="bg-slate-900 border border-emerald-500/50 w-full max-w-5xl max-h-[90vh] overflow-hidden flex flex-col shadow-2xl">
-        <div className="p-4 border-b border-slate-800 flex justify-between items-center bg-emerald-500/10">
-          <div className="flex items-center gap-3 text-emerald-400 font-bold uppercase tracking-widest text-sm">
-            <Terminal className="w-5 h-5" /> 
-            UQTS-2026: OPERATIONAL COMMAND MANUAL (V2.5)
+      <div className="bg-slate-900 border border-emerald-500/50 w-full max-w-6xl max-h-[95vh] overflow-hidden flex flex-col shadow-2xl">
+        <div className="p-5 border-b border-slate-800 flex justify-between items-center bg-emerald-500/10">
+          <div className="flex items-center gap-3 text-emerald-400 font-bold uppercase tracking-[0.3em] text-sm">
+            <Terminal className="w-5 h-5 animate-pulse" /> 
+            UQTS-2026: 16-INSTRUMENT COMMAND MANUAL
           </div>
-          <button onClick={onClose} className="text-slate-500 hover:text-white transition-colors bg-slate-800/50 p-1.5 rounded-full hover:bg-emerald-500/20">
+          <button onClick={onClose} className="text-slate-500 hover:text-white transition-colors bg-slate-800/50 p-2 rounded-full hover:bg-rose-500/20">
             <X className="w-5 h-5" />
           </button>
         </div>
-        <div className="p-8 space-y-10 overflow-y-auto no-scrollbar bg-gradient-to-b from-slate-900 to-black">
+        <div className="p-10 space-y-12 overflow-y-auto no-scrollbar bg-gradient-to-b from-slate-900 to-black">
           {sections.map((s, i) => (
-            <div key={i} className="space-y-4">
-              <h3 className="text-emerald-500 font-black uppercase text-xs tracking-[0.3em] border-b border-emerald-900/40 pb-2 flex items-center gap-2">
-                <span className="opacity-50">0{i+1}</span> {s.title}
+            <div key={i} className="space-y-6">
+              <h3 className="text-emerald-500 font-black uppercase text-xs tracking-[0.4em] border-b border-emerald-900/40 pb-3 flex items-center gap-3">
+                <span className="opacity-30 text-lg">0{i+1}</span> {s.title}
               </h3>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
                 {s.items.map((it, j) => (
-                  <div key={j} className="bg-slate-800/20 p-5 border border-slate-700/50 group hover:border-emerald-500/40 transition-all hover:bg-slate-800/40 shadow-inner">
-                    <h4 className="text-slate-100 font-bold text-[10px] uppercase mb-2 flex items-center gap-2">
-                      <div className="w-1.5 h-3 bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]" />
+                  <div key={j} className="bg-slate-800/10 p-5 border border-slate-700/30 group hover:border-emerald-500/50 transition-all hover:bg-slate-800/30 shadow-2xl">
+                    <h4 className="text-slate-100 font-bold text-[10px] uppercase mb-3 flex items-center gap-2">
+                      <div className="w-2 h-2 bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.8)]" />
                       {it.label}
                     </h4>
-                    <p className="text-slate-400 text-[11px] leading-relaxed font-medium">{it.detail}</p>
+                    <p className="text-slate-400 text-[11px] leading-relaxed font-medium group-hover:text-slate-200">{it.detail}</p>
                   </div>
                 ))}
               </div>
             </div>
           ))}
         </div>
-        <div className="p-6 bg-slate-900 border-t border-slate-800 flex justify-between items-center">
-          <div className="text-[9px] text-slate-600 uppercase font-black tracking-widest animate-pulse italic">System Status: Neural_Active // Kernel: Stable</div>
-          <button onClick={onClose} className="bg-emerald-600 text-black px-16 py-3 font-black uppercase text-xs hover:bg-emerald-400 shadow-[0_0_20px_rgba(16,185,129,0.3)] transition-all active:scale-95">
-            I ACKNOWLEDGE & ACCEPT COMMAND
+        <div className="p-8 bg-slate-900 border-t border-slate-800 flex justify-between items-center">
+          <div className="space-y-1">
+            <div className="text-[10px] text-emerald-500 font-black uppercase tracking-widest flex items-center gap-2">
+              <div className="w-2 h-2 rounded-full bg-emerald-500 animate-ping" />
+              SYSTEM_HEARTBEAT: NOMINAL
+            </div>
+            <div className="text-[9px] text-slate-600 uppercase font-bold tracking-widest italic">C++26 OSQP Kernel // SIP_STREAM V2.5</div>
+          </div>
+          <button onClick={onClose} className="bg-emerald-600 text-black px-20 py-4 font-black uppercase text-sm hover:bg-emerald-400 shadow-[0_0_30px_rgba(16,185,129,0.4)] transition-all active:scale-95 border-none">
+            ACKNOWLEDGE & INITIALIZE COCKPIT
           </button>
         </div>
       </div>
