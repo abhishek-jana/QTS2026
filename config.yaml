@@ -28,10 +28,10 @@ model_pipeline:
     gnn_layers: 2                   # Graph layers for sector cross-talk
   training:
     loss_function: "pairwise_ranknet"
-    epochs: 5
+    epochs: 25
     lr: 0.001
     batch_size: 8192
-    early_stopping_patience: 3
+    early_stopping_patience: 5
     weight_decay: 0.0001           # L2 Regularization to prevent overfitting
     dropout: 0.3                    # Dropout rate for feature fusion
   model_path: "models/challenger_v1.pt" # Default production model

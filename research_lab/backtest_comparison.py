@@ -26,6 +26,16 @@ class BacktestOrchestrator:
         self.engine = DataEngine(storage_path=db_path)
         self.tickers = tickers if tickers else self.config['universe']['tickers']
         
+        # Pre-flight Check: Ensure DB is not empty
+        try:
+            count = self.engine.conn.execute("SELECT count(*) FROM market_data").fetchone()[0]
+            if count == 0:
+                logger.error(f"❌ DATABASE IS EMPTY ({db_path}). Please run with --ingest first.")
+            else:
+                logger.info(f"✅ Pre-flight Check: Found {count} records in DuckDB.")
+        except Exception as e:
+            logger.warning(f"⚠️ Pre-flight database check failed: {e}. If this is a new run, ensure --ingest is used.")
+
         # Pull Signal Physics parameters
         d_param = self.config['signal_physics']['fractional_differentiation']['d_param']
         scales = np.array(self.config['signal_physics']['wavelet_transform']['scales'])
@@ -43,11 +53,18 @@ class BacktestOrchestrator:
 
     def _collect_training_data(self, start: datetime, end: datetime) -> MultiModalBatch:
         logger.info(f"📥 Collecting multi-regime training data ({start.date()} -> {end.date()})...")
-        steps = self.universe.walk_forward(universe=self.tickers, start_date=start, end_date=end, stride=21, lookback=self.lookback, horizon=self.horizon)
+        # SENIOR OPTIMIZATION: Use stride=1 and latest_only=False to get 1.8M samples
+        steps = self.universe.walk_forward(universe=self.tickers, start_date=start, end_date=end, stride=1, lookback=self.lookback, horizon=self.horizon, latest_only=False)
+        
+        if not steps:
+            logger.error("❌ NO TRAINING SAMPLES PRODUCED. Is your database empty? Try running with --ingest.")
+            raise ValueError("Empty training dataset produced. Cannot continue.")
+
         all_x_seq, all_x_spatial, all_x_graph, all_y = [], [], [], []
         for step in steps:
             batch = step['batch']
             all_x_seq.append(batch.data['x_seq']); all_x_spatial.append(batch.data['x_spatial']); all_x_graph.append(batch.data['x_graph']); all_y.append(batch.labels)
+        
         return MultiModalBatch(
             data={'x_seq': torch.cat(all_x_seq), 'x_spatial': torch.cat(all_x_spatial), 'x_graph': torch.cat(all_x_graph)},
             labels=torch.cat(all_y), tickers=['COMBINED'] * len(torch.cat(all_y)), times=[datetime.now()] * len(torch.cat(all_y))
@@ -71,13 +88,17 @@ class BacktestOrchestrator:
             using_subset = len(self.tickers) < len(self.config['universe']['tickers'])
             if os.path.exists(cache_path) and not using_subset:
                 logger.info(f"📦 LOADING CACHED TRAINING FEATURES: {cache_path}")
-                torch.serialization.add_safe_globals([MultiModalBatch, datetime])
+                from datetime import datetime as dt_class
+                torch.serialization.add_safe_globals([MultiModalBatch, dt_class])
                 train_dataset = torch.load(cache_path, weights_only=True)
+                if train_dataset.data['x_spatial'].shape[2] != self.n_scales:
+                    logger.warning("⚠️ Cache config mismatch (scales). RE-COLLECTING...")
+                    train_dataset = self._collect_training_data(train_start, train_end)
+                    torch.save(train_dataset, cache_path)
             else:
                 train_dataset = self._collect_training_data(train_start, train_end)
                 if not using_subset: torch.save(train_dataset, cache_path)
             
-            # BI-TEMPORAL VALIDATION: 80/20 Split
             n_total = len(train_dataset.labels)
             n_train = int(n_total * 0.8)
             indices = torch.randperm(n_total)
@@ -98,7 +119,7 @@ class BacktestOrchestrator:
 
             logger.info(f"🛠️ Training Models on {len(train_dataset.labels)} samples with {len(val_dataset.labels)} validation hold-out...")
             epochs, lr = self.config['model_pipeline']['training']['epochs'], self.config['model_pipeline']['training']['lr']
-            patience = self.config['model_pipeline']['training'].get('early_stopping_patience', 3)
+            patience = self.config['model_pipeline']['training'].get('early_stopping_patience', 5)
 
             logger.info("🏆 Training Champion (MLP)...")
             champion.fit((train_dataset.data['x_spatial'][:, 0, :, -1], train_dataset.labels), 
@@ -113,7 +134,8 @@ class BacktestOrchestrator:
             logger.success("✅ Training complete. Models exported.")
         else:
             logger.info("⏭️ SKIPPING TRAINING. Loading existing models...")
-            torch.serialization.add_safe_globals([MultiModalBatch, datetime])
+            from datetime import datetime as dt_class
+            torch.serialization.add_safe_globals([MultiModalBatch, dt_class])
             challenger = torch.jit.load("models/challenger_v1.pt").to(device)
             if os.path.exists("models/champion_baseline.pt"):
                 champion.load_state_dict(torch.load("models/champion_baseline.pt", weights_only=True))
@@ -121,12 +143,12 @@ class BacktestOrchestrator:
 
         logger.info(f"🧪 Evaluating on OOS regime ({test_start.date()} -> {test_end.date()})...")
         oos_cache_path = "data/oos_steps.pt"
-        if os.path.exists(oos_cache_path) and len(self.tickers) == len(self.config['universe']['tickers']):
+        if os.path.exists(oos_cache_path) and not using_subset:
             logger.info(f"📦 LOADING CACHED BACKTEST DATA: {oos_cache_path}")
             steps = torch.load(oos_cache_path, weights_only=True)
         else:
-            steps = self.universe.walk_forward(universe=self.tickers, start_date=test_start, end_date=test_end, stride=21, lookback=self.lookback, horizon=5)
-            if len(self.tickers) == len(self.config['universe']['tickers']): torch.save(steps, oos_cache_path)
+            steps = self.universe.walk_forward(universe=self.tickers, start_date=test_start, end_date=test_end, stride=21, lookback=self.lookback, horizon=5, latest_only=True)
+            if not using_subset: torch.save(steps, oos_cache_path)
 
         results = []
         for step in steps:
@@ -137,7 +159,7 @@ class BacktestOrchestrator:
                 else: ch_scores = challenger({k: v.to(device) for k, v in batch.data.items()}).squeeze().cpu().numpy()
             target = batch.labels.cpu().numpy()
             c_ic = 0 if np.std(c_scores) < 1e-6 or np.std(target) < 1e-6 else spearmanr(c_scores, target)[0]
-            ch_ic = 0 if np.std(ch_scores) < 1e-6 or np.std(target) < 1e-6 else spearmanr(ch_scores, target)[0]
+            ch_ic = 0 if np.std(c_scores) < 1e-6 or np.std(target) < 1e-6 else spearmanr(ch_scores, target)[0]
             results.append({'date': step['date'], 'champion_ic': c_ic if not np.isnan(c_ic) else 0, 'challenger_ic': ch_ic if not np.isnan(ch_ic) else 0})
             
         df_results = pd.DataFrame(results); df_results.to_csv("data/backtest_results.csv", index=False)

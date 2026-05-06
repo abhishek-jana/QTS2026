@@ -4,11 +4,7 @@ import torch
 from dataclasses import dataclass
 from typing import List, Dict, Optional
 from datetime import datetime, timedelta
-from loguru import logger
-
-from research_lab.alpha_labeler import AlphaLabeler
-from research_lab.plugins.core_plugins import ModalityPlugin, ModalityRegistry
-from research_lab.data_engine import IDataProvider
+from qts_core.logger import logger
 
 @dataclass
 class MultiModalBatch:
@@ -30,52 +26,49 @@ class MultiModalBatch:
         return self
 
 class AlphaUniverse:
-    def __init__(self, data_provider: IDataProvider, plugins: List[ModalityPlugin] = None, config: dict = None):
+    def __init__(self, data_provider, plugins: List = None, config: dict = None):
+        from research_lab.plugins.core_plugins import ModalityRegistry
         self.data_provider = data_provider
-        self.labeler = AlphaLabeler()
+        self.labeler = None # Lazy load to avoid circular
         self.config = config or {}
         
-        # Registry-based Auto-Discovery
         if plugins is not None:
             self.plugins = plugins
         else:
-            # Load from registry based on config if available
-            plugin_config = self.config.get('plugins', {})
-            self.plugins = ModalityRegistry.create_all(plugin_config)
-            logger.info(f"AlphaUniverse: Auto-discovered {len(self.plugins)} plugins: {[p.name for p in self.plugins]}")
+            self.plugins = ModalityRegistry.create_all(self.config.get('plugins', {}))
+            logger.info(f"AlphaUniverse: Auto-discovered plugins: {[p.name for p in self.plugins]}")
 
         self.lookback = self.config.get('signal_physics', {}).get('lookback_days', 63)
         self.horizon = self.config.get('signal_physics', {}).get('horizon_days', 21)
         self.padding = self.config.get('signal_physics', {}).get('math_padding', 100)
 
     def snapshot(self, as_of: datetime, tickers: List[str], lookback: int = None, horizon: int = None, latest_only: bool = True, backtest_mode: bool = False) -> Optional[MultiModalBatch]:
+        from research_lab.alpha_labeler import AlphaLabeler
+        if not self.labeler: self.labeler = AlphaLabeler()
+        
         lookback = lookback or self.lookback
         horizon = horizon or self.horizon
         total_window = lookback + self.padding
         
-        # BACKTEST OPTIMIZATION: If in backtest mode, we need to fetch data BEYOND as_of to calculate labels
-        # Knowledge Time is still as_of for features, but for labels we need the ground truth.
         fetch_limit = as_of + timedelta(days=horizon * 2) if backtest_mode else as_of
         batch_view = self.data_provider.get_batch_pit_view(tickers, fetch_limit)
-        if batch_view.empty: return None
+        if batch_view.empty:
+            return None
 
         processed_views = {}
         for ticker in tickers:
             ticker_data = batch_view[batch_view['ticker'] == ticker]
             if ticker_data.empty: continue
             
-            # Feature view: Data up to as_of
             feat_view = ticker_data[ticker_data.index <= as_of]
             if len(feat_view) < lookback: continue
             
-            # Full view for labeling: Features + Horizon
             label_view = ticker_data[ticker_data.index <= fetch_limit]
             processed_views[ticker] = label_view
 
         if not processed_views: return None
         combined_view = pd.concat(processed_views.values())
         
-        # Generate labels on the extended view
         returns_df = self.labeler.generate_labels(combined_view, horizon=horizon)
         market_proxy = returns_df['SPY'] if 'SPY' in returns_df.columns else returns_df.mean(axis=1)
         residuals = self.labeler.residualize_universe(returns_df.drop(columns=['SPY']) if 'SPY' in returns_df.columns else returns_df, market_proxy)
@@ -86,7 +79,6 @@ class AlphaUniverse:
         y_list, final_tickers, final_times = [], [], []
 
         for ticker, full_view in processed_views.items():
-            # Features are calculated on the window ENDING at as_of
             feat_view = full_view[full_view.index <= as_of]
             if latest_only: feat_view = feat_view.tail(total_window)
             
@@ -101,7 +93,6 @@ class AlphaUniverse:
                 event_time = feat_view.index[t_idx]
                 label_val = ticker_labels.get(event_time, np.nan)
                 
-                # During backtest, skip samples with missing labels (the future hasn't happened yet)
                 if backtest_mode and np.isnan(label_val): continue
 
                 for p_name, tensor in ticker_features.items(): fused_data[p_name].append(tensor[i])
@@ -119,9 +110,7 @@ class AlphaUniverse:
         results = []
         current_date = start_date
         while current_date <= end_date:
-            logger.info(f"Executing Lab Walk-Forward: {current_date}")
-            # ENFORCE: latest_only=True for cross-sectional backtest snapshots
-            # ENFORCE: backtest_mode=True to allow looking ahead for labels
+            logger.info(f"Executing Lab Walk-Forward: {current_date.date()}")
             batch = self.snapshot(as_of=current_date, tickers=universe, latest_only=True, backtest_mode=True, **kwargs)
             if batch: results.append({'date': current_date, 'batch': batch})
             current_date += timedelta(days=stride)
