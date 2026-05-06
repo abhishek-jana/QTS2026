@@ -9,6 +9,7 @@ import redis
 import sys
 import os
 import time
+from qts_core.logger import logger
 
 # Ensure project root is in path
 sys.path.append(os.getcwd())
@@ -27,9 +28,9 @@ class InferenceWorker:
         try:
             self.redis_client = redis.Redis(host='localhost', port=6379, decode_responses=True)
             self.redis_client.ping()
-            print("✅ INFERENCE WORKER: Connected to Redis successfully.")
+            logger.info("INFERENCE WORKER: Connected to Redis successfully.")
         except Exception as e:
-            print(f"⚠️ INFERENCE WORKER: Redis connection failed: {e}. Please ensure Redis is running.")
+            logger.error(f"INFERENCE WORKER: Redis connection failed: {e}. Please ensure Redis is running.")
             sys.exit(1)
 
         # Initialize Strategy Engine (uses DuckDB internally)
@@ -52,14 +53,14 @@ class InferenceWorker:
     
     def initialize(self):
         """Warm up the engine with historical data."""
-        print("📥 INFERENCE WORKER: WARMING UP ENGINE (DuckDB Ingestion)...")
+        logger.info("INFERENCE WORKER: WARMING UP ENGINE (DuckDB Ingestion)...")
         
         # Check if we have data
         count = self.data_engine.conn.execute("SELECT COUNT(*) FROM market_data").fetchone()[0]
         if count == 0:
-            print("⚠️ DB empty, generating synthetic smoke test data...")
+            logger.warning("DB empty, generating synthetic smoke test data...")
             self.data_engine.generate_synthetic_pit_data(self.tickers, days=300)
-            print("✅ Synthetic data generated.")
+            logger.info("Synthetic data generated.")
         
         today_str = datetime.now().strftime("%Y-%m-%d")
         
@@ -70,11 +71,11 @@ class InferenceWorker:
                     self.config['data_engine']['start_date'],
                     today_str
                 )
-                print("✅ INFERENCE WORKER: WARM UP COMPLETE")
+                logger.info("INFERENCE WORKER: WARM UP COMPLETE")
             except Exception as e:
-                print(f"⚠️ INFERENCE WORKER: Ingestion failed: {e}")
+                logger.error(f"INFERENCE WORKER: Ingestion failed: {e}")
         else:
-            print("⚠️ INFERENCE WORKER: Skipping live ingestion (no API keys).")
+            logger.warning("INFERENCE WORKER: Skipping live ingestion (no API keys).")
         
         self.is_initialized = True
 
@@ -91,7 +92,7 @@ class InferenceWorker:
                 else:
                     self.live_prices[self.tickers[0]] = float(data['Close'].iloc[-1])
         except Exception as e:
-            print(f"⚠️ Real-time polling error: {e}")
+            logger.warning(f"Real-time polling error: {e}")
 
     def _update_metacognition_feedback(self):
         """Calculates realized returns and updates the StrategyEngine belief score."""
@@ -109,7 +110,7 @@ class InferenceWorker:
                 pass # Suppress logging for brevity
 
         if realized_returns:
-            print(f"🧠 FEEDBACK LOOP: Updating Metacognition with {len(realized_returns)} returns.")
+            logger.info(f"FEEDBACK LOOP: Updating Metacognition with {len(realized_returns)} returns.")
             self.strategy.update_model_metacognition(realized_returns, self.previous_rankings)
 
     def _update_stochastic_metrics(self):
@@ -194,7 +195,7 @@ class InferenceWorker:
 
     def run(self):
         """Main loop that calculates and publishes to Redis."""
-        print("🚀 INFERENCE WORKER: LOOP STARTED")
+        logger.info("INFERENCE WORKER: LOOP STARTED")
         last_poll_time = 0
         
         while True:
@@ -206,7 +207,7 @@ class InferenceWorker:
             if self.previous_rankings and self.previous_knowledge_time:
                 self._update_metacognition_feedback()
 
-            print(f"🔍 GENERATING HOUSE VIEW FOR KNOWLEDGE_TIME: {self.current_knowledge_time}")
+            logger.info(f"GENERATING HOUSE VIEW FOR KNOWLEDGE_TIME: {self.current_knowledge_time}")
             house_view = self.strategy.get_current_rankings(
                 as_of=self.current_knowledge_time,
                 include_batch=True
@@ -261,9 +262,9 @@ class InferenceWorker:
                     }
                     self.redis_client.publish(f'uqts:spectral:{ticker}', json.dumps(spectral_payload))
                 
-                print(f"📡 PUBLISHED TO REDIS (Global + {len(active_tickers)} spectral streams)")
+                logger.info(f"PUBLISHED TO REDIS (Global + {len(active_tickers)} spectral streams)")
             else:
-                print(f"⚠️ StrategyEngine Status: {house_view['status']} for {self.current_knowledge_time}")
+                logger.warning(f"StrategyEngine Status: {house_view['status']} for {self.current_knowledge_time}")
 
             self.current_knowledge_time += timedelta(hours=1)
             time.sleep(self.config['ui_cockpit']['update_interval_ms'] / 1000.0)

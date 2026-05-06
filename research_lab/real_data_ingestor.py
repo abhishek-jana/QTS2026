@@ -3,6 +3,7 @@ import pandas as pd
 import yfinance as yf
 from datetime import datetime, timedelta
 from research_lab.data_engine import DataEngine
+from qts_core.logger import logger
 
 class InstitutionalIngestor:
     """
@@ -21,9 +22,9 @@ class InstitutionalIngestor:
             self.api_key = os.getenv("TIINGO_API_KEY")
             self.headers = {'Content-Type': 'application/json'}
         elif self.provider == "YFINANCE":
-            print("ℹ️ InstitutionalIngestor: Using yfinance provider.")
+            logger.info("InstitutionalIngestor: Using yfinance provider.")
         else:
-            print(f"⚠️ InstitutionalIngestor: Unknown provider {self.provider}, falling back to YFINANCE.")
+            logger.warning(f"InstitutionalIngestor: Unknown provider {self.provider}, falling back to YFINANCE.")
             self.provider = "YFINANCE"
 
     def ingest_universe(self, tickers: list, start_date: str, end_date: str):
@@ -33,12 +34,12 @@ class InstitutionalIngestor:
             # In a production system, we'd check date ranges per ticker.
             count = self.engine.conn.execute("SELECT count(*) FROM market_data").fetchone()[0]
             if count > 0:
-                print(f"ℹ️ CACHE HIT: Found {count} records in DuckDB. Skipping download.")
+                logger.info(f"CACHE HIT: Found {count} records in DuckDB. Skipping download.")
                 return
         except Exception as e:
-            print(f"⚠️ Cache check failed (possibly empty DB): {e}")
+            logger.warning(f"Cache check failed (possibly empty DB): {e}")
 
-        print(f"📥 FETCHING {self.provider} DATA: {tickers}...")
+        logger.info(f"FETCHING {self.provider} DATA: {tickers}...")
         all_data = []
         
         if self.provider == "YFINANCE":
@@ -46,7 +47,7 @@ class InstitutionalIngestor:
                 # yfinance returns data indexed by Date
                 df = yf.download(tickers, start=start_date, end=end_date, group_by='ticker', progress=False)
                 if df.empty:
-                    print("⚠️ yfinance returned no data.")
+                    logger.warning("yfinance returned no data.")
                     return
 
                 for ticker in tickers:
@@ -65,7 +66,7 @@ class InstitutionalIngestor:
                             'is_correction': False
                         })
             except Exception as e:
-                print(f"❌ yfinance ingestion error: {e}")
+                logger.error(f"yfinance ingestion error: {e}")
         
         else:
             for ticker in tickers:
@@ -81,11 +82,11 @@ class InstitutionalIngestor:
                         for bar in resp:
                             all_data.append(self._format_tiingo(ticker, bar))
                 except Exception as e:
-                    print(f"❌ Error fetching {ticker} from {self.provider}: {e}")
+                    logger.error(f"Error fetching {ticker} from {self.provider}: {e}")
         
         if all_data:
             self.engine.insert_dataframe(pd.DataFrame(all_data))
-            print(f"✅ INGESTION COMPLETE: {len(all_data)} records loaded.")
+            logger.info(f"INGESTION COMPLETE: {len(all_data)} records loaded.")
 
     def _format_polygon(self, ticker, bar):
         event_time = pd.to_datetime(bar.timestamp, unit='ms')

@@ -32,6 +32,8 @@ model_pipeline:
     lr: 0.001
     batch_size: 8192
     early_stopping_patience: 3
+    weight_decay: 0.0001           # L2 Regularization to prevent overfitting
+    dropout: 0.3                    # Dropout rate for feature fusion
   model_path: "models/challenger_v1.pt" # Default production model
   wfo_engine:                       # Walk-Forward Optimization constraints
     train_window_months: 48         # 4 years of training
@@ -62,4 +64,3 @@ execution_muscle:
 ui_cockpit:
   update_interval_ms: 2000          # Increased for 20-ticker stability
   stream_start_offset_days: 120
-  

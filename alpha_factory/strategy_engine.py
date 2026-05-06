@@ -5,14 +5,14 @@ import pandas as pd
 import os
 from datetime import datetime
 from typing import Dict, List, Any, Optional, Protocol
-from datetime import datetime
 
 from research_lab.alpha_universe import AlphaUniverse
 from research_lab.alpha_labeler import AlphaLabeler
-from research_lab.plugins.core_plugins import SequentialPlugin, SpatialPlugin, GraphPlugin
+from research_lab.plugins.core_plugins import ModalityRegistry
 from research_lab.real_data_ingestor import InstitutionalIngestor
 from research_lab.alpha_ranker import MultiModalRankNet, InputSpec
 from alpha_factory.meta_controller import BayesianMetaController
+from qts_core.logger import logger
 
 class IDataProvider(Protocol):
     def get_pit_view(self, ticker: str, as_of: datetime) -> pd.DataFrame: ...
@@ -29,13 +29,8 @@ class StrategyEngine:
 
         self.data_provider = data_provider
         
-        # 1. Initialize AlphaUniverse with triple modalities (GNN included)
-        d_param = self.config.get('signal_physics', {}).get('fractional_differentiation', {}).get('d_param', 0.4)
-        self.lab = AlphaUniverse(data_provider=self.data_provider, plugins=[
-            SequentialPlugin(d_param=d_param), 
-            SpatialPlugin(),
-            GraphPlugin(feature_dim=8)
-        ], config=self.config)
+        # 1. Initialize AlphaUniverse (Plugins are now auto-discovered by the Registry)
+        self.lab = AlphaUniverse(data_provider=self.data_provider, config=self.config)
 
         # 2. Setup Ingestor
         self.ingestor = InstitutionalIngestor(self.data_provider)
@@ -50,9 +45,9 @@ class StrategyEngine:
         try:
             self.model = torch.jit.load(model_path)
             self.model.eval()
-            print(f"✅ StrategyEngine: Loaded TorchScript RankNet ({model_path}).")
+            logger.info(f"StrategyEngine: Loaded TorchScript RankNet ({model_path}).")
         except Exception as e:
-            print(f"⚠️ StrategyEngine: TorchScript load failed ({e}). Falling back to Python model.")
+            logger.warning(f"StrategyEngine: TorchScript load failed ({e}). Falling back to Python model.")
             # Standard triple-modality spec
             lookback = self.config['signal_physics'].get('lookback_days', 63)
             n_scales = 8
@@ -67,23 +62,23 @@ class StrategyEngine:
     def ingest_data(self, tickers: List[str], start_date: str, end_date: str):
         """Dedicated method for manual ingestion."""
         if not self.ingestor:
-             print("⚠️ StrategyEngine: Ingestor not configured. Checking for existing data...")
+             logger.warning("StrategyEngine: Ingestor not configured. Checking for existing data...")
              try:
                  test_view = self.data_provider.get_pit_view(tickers[0], datetime.now())
                  if test_view.empty:
-                     print("⚠️ StrategyEngine: No data found. Generating synthetic data for Mission Control UI...")
+                     logger.warning("StrategyEngine: No data found. Generating synthetic data for Mission Control UI...")
                      if hasattr(self.data_provider, 'generate_synthetic_pit_data'):
                          self.data_provider.generate_synthetic_pit_data(tickers)
-                         print("✅ StrategyEngine: Synthetic data generation complete.")
+                         logger.info("StrategyEngine: Synthetic data generation complete.")
                      else:
-                         print("❌ StrategyEngine: Data provider does not support synthetic data generation.")
+                         logger.error("StrategyEngine: Data provider does not support synthetic data generation.")
                  else:
-                     print(f"✅ StrategyEngine: Found existing data ({len(test_view)} records for {tickers[0]}).")
+                     logger.info(f"StrategyEngine: Found existing data ({len(test_view)} records for {tickers[0]}).")
              except Exception as e:
-                 print(f"❌ StrategyEngine: Error checking for existing data: {e}")
+                 logger.error(f"StrategyEngine: Error checking for existing data: {e}")
              return
              
-        print(f"📥 StrategyEngine: Ingesting {len(tickers)} tickers from {start_date} to {end_date}...")
+        logger.info(f"StrategyEngine: Ingesting {len(tickers)} tickers from {start_date} to {end_date}...")
         self.ingestor.ingest_universe(tickers, start_date, end_date)
 
     def get_current_rankings(self, as_of: datetime, include_batch: bool = False) -> Dict[str, Any]:
@@ -165,5 +160,5 @@ class StrategyEngine:
         y_pred = np.array([predicted_scores[t] for t in tickers])
         
         new_belief = self.meta_controller.update_belief(y_true, y_pred)
-        print(f"🧠 MetaController Updated: New Belief Score = {new_belief:.4f}")
+        logger.info(f"MetaController Updated: New Belief Score = {new_belief:.4f}")
         return new_belief

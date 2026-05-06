@@ -4,9 +4,10 @@ import torch
 from dataclasses import dataclass
 from typing import List, Dict, Optional
 from datetime import datetime, timedelta
+from loguru import logger
 
 from research_lab.alpha_labeler import AlphaLabeler
-from research_lab.plugins.core_plugins import ModalityPlugin
+from research_lab.plugins.core_plugins import ModalityPlugin, ModalityRegistry
 from research_lab.data_engine import IDataProvider
 
 @dataclass
@@ -32,8 +33,17 @@ class AlphaUniverse:
     def __init__(self, data_provider: IDataProvider, plugins: List[ModalityPlugin] = None, config: dict = None):
         self.data_provider = data_provider
         self.labeler = AlphaLabeler()
-        self.plugins = plugins or []
         self.config = config or {}
+        
+        # Registry-based Auto-Discovery
+        if plugins is not None:
+            self.plugins = plugins
+        else:
+            # Load from registry based on config if available
+            plugin_config = self.config.get('plugins', {})
+            self.plugins = ModalityRegistry.create_all(plugin_config)
+            logger.info(f"AlphaUniverse: Auto-discovered {len(self.plugins)} plugins: {[p.name for p in self.plugins]}")
+
         self.lookback = self.config.get('signal_physics', {}).get('lookback_days', 63)
         self.horizon = self.config.get('signal_physics', {}).get('horizon_days', 21)
         self.padding = self.config.get('signal_physics', {}).get('math_padding', 100)
@@ -109,7 +119,7 @@ class AlphaUniverse:
         results = []
         current_date = start_date
         while current_date <= end_date:
-            print(f"Executing Lab Walk-Forward: {current_date}")
+            logger.info(f"Executing Lab Walk-Forward: {current_date}")
             # ENFORCE: latest_only=True for cross-sectional backtest snapshots
             # ENFORCE: backtest_mode=True to allow looking ahead for labels
             batch = self.snapshot(as_of=current_date, tickers=universe, latest_only=True, backtest_mode=True, **kwargs)

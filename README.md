@@ -76,52 +76,36 @@ Follow this sequential workflow to initialize, verify, and deploy the QTS2026 pl
    ```
 
 ### **Phase 2: Signal Physics Audit**
-Before training, verify the mathematical integrity of the signal pipeline (Stationarity & Spectral Energy).
+Before training, verify the mathematical integrity of the signal pipeline.
 ```bash
 uv run python -m research_lab.verify_physics
 ```
-*   **Metric**: Ensure ADF p-values for stationary series are $< 0.05$.
-*   **Interpretation**: Refer to the **"Physics Audit: Interpreting the Signal"** section in `docs/ARTICLE.md` for a guide on analyzing stationarity and scale activation energy.
 
 ### **Phase 3: Multi-Regime Backtesting**
-Train the 'Champion' vs. 'Challenger' models on historical data (2016-2022) and evaluate on the 2023-Present Out-of-Sample regime.
+Train and evaluate the models using the professional entry point.
 ```bash
-uv run python research_lab/backtest_comparison.py
-```
-*   **Goal**: Verify that the Challenger (Multi-Modal) IC exceeds the Champion (Baseline).
+# Run everything (Ingest + Train + Backtest)
+uv run python run.py lab
 
-### **Phase 4: High-Performance Serialization**
-Export the trained model to TorchScript for C++ execution.
-```bash
-# This is typically automated within the training pipeline.
-# To verify serialization manually:
-uv run python -c "from research_lab.alpha_ranker import MultiModalRankNet; MultiModalRankNet().export('models/model.pt')"
+# Run only training on existing data
+uv run python run.py lab --train
+
+# Run a quick smoke test on 3 tickers
+uv run python run.py lab --train --test-subset
 ```
 
-### **Phase 5: Production Muscle Compilation**
-Compile the C++26 high-performance execution engine.
-```bash
-cd execution_muscle
-g++ -std=c++2b main.cpp -o muscle
-./muscle
-```
+### **Phase 4: Production Muscle Monitoring**
+Launch the production worker and visual cockpit.
 
-### **Phase 6: Forward Testing (Paper Trading)**
-Deploy the autonomous paper trading bot for live market evaluation.
-```bash
-# Simply run the module via uv
-uv run python -m execution_muscle.paper_bot
-```
-*   **Operational Tip**: Run this in a `tmux` session for persistent execution (see `DEPLOYMENT.md`).
-
-### **Phase 7: Mission Control Monitoring**
-Launch the visual cockpit to monitor live signals and meta-cognition metrics.
-
-1. **Start Backend**:
+1. **Start Inference Worker**:
    ```bash
-   uv run python cockpit_backend/main.py
+   uv run python run.py prod
    ```
-2. **Start Frontend**:
+2. **Start Backend Server**:
+   ```bash
+   uv run python run.py ui
+   ```
+3. **Start Frontend**:
    ```bash
    cd cockpit_frontend
    npm run dev
