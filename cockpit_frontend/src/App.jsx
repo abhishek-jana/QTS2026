@@ -159,7 +159,7 @@ const RankingGrid = ({ ladder, onSelectTicker, filterSector, onClearFilter }) =>
   }, [ladder, filterSector]);
 
   return (
-    <div className="flex-1 overflow-y-auto no-scrollbar pr-2 h-[450px]">
+    <div className="flex-1 overflow-y-auto no-scrollbar pr-2 h-[520px]">
       <div className="flex justify-between items-center mb-2 border-b border-emerald-900/30 pb-1">
         <div className="text-base font-bold text-emerald-500/80 uppercase tracking-tighter italic">Decile Ladder (House View)</div>
         {filterSector && (
