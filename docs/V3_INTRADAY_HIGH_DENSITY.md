@@ -1,16 +1,17 @@
-# UQTS-2026 Version 2: Intraday Pivot & High-Density Alpha Roadmap
+# UQTS-2026 Version 3: Intraday High-Density Alpha Roadmap
 
 ## Strategic Overview
-While V1 successfully captured a high-resolution daily Alpha edge (IC 0.0361) across a 100-ticker institutional universe, scaling up to 500+ stocks is computationally prohibitive (the $O(N^2)$ Pairwise Rank problem) and introduces severe slippage and noise from less liquid mid-cap equities. 
+While V2 captured the "Super-Liquidity" sweet spot across a 60-ticker universe, V3 pushes the platform into high-density industrial scaling. This version targets 100+ stocks at Hourly/15-minute granularity, using complex relational graphs and high-resolution wavelet transforms.
 
-Therefore, V2 will scale **Deep** rather than **Wide**. By retaining the highly liquid S&P 100 universe and transitioning to intraday data, V2 aims to compound the Alpha edge at a significantly higher velocity.
+## V3 Core Objectives
 
-## V2 Core Objectives
+### 1. High-Density Industrial Scaling
+*   **Concept:** Expand the universe back to 100+ stocks while maintaining the intraday resolution established in V2.
+*   **Advantage:** Captures more cross-sectional arbitrage opportunities and rotation signals that only emerge in larger, diverse portfolios.
 
-### 1. The Intraday Pivot (TimeFrame.Hour)
-*   **Concept:** Shift data ingestion from `1Day` bars to `1Hour` or `15Min` bars via Alpaca's SIP feed.
-*   **Advantage:** Provides the LSTM and Vision Transformer (ViT) with significantly more "frames" per day, allowing the model to learn intra-day volatility clustering, VWAP reversion, and micro-regimes.
-*   **Execution:** A 2.0% IC on hourly data can be far more profitable than a 3.6% IC on daily data due to the increased frequency of compounding trades.
+### 2. Relational GNN Refinement (Hard Sector Masks)
+*   **Concept:** The `LightweightGNN` currently learns relationships using pure self-attention.
+*   **Refinement:** Implement **Hard Sector Masking**. By injecting actual GICS sector definitions as an adjacency matrix, the GNN is restricted to learning intra-sector dynamics (e.g., Financials only heavily attend to Financials) before cross-sector dynamics. This dramatically speeds up convergence in high-node count graphs.
 
 ### 2. Wavelet Physics Optimization
 *   **Concept:** The current dyadic scale structure (`[1, 2, 4, 8, 16, 32, 64, 128]`) is standard but potentially sub-optimal for capturing high-frequency intraday energy pulses.

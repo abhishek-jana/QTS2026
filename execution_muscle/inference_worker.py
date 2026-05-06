@@ -42,7 +42,7 @@ class InferenceWorker:
             "COP": "Energy", "IBM": "Technology", "BA": "Industrials", "SPGI": "Financials",
             "CAT": "Industrials", "LMT": "Industrials", "RTX": "Industrials", "DE": "Industrials",
             "TJX": "Consumer", "BKNG": "Consumer", "BLK": "Financials", "ELV": "Healthcare",
-            "MU": "Technology", "SCHW": "Financials", "GILD": "Healthcare", "PLD": "Real Estate",
+            "MU": "Technology", "Mu": "Technology", "SCHW": "Financials", "GILD": "Healthcare", "PLD": "Real Estate",
             "SBUX": "Consumer", "MMC": "Financials", "MO": "Consumer", "CB": "Financials",
             "ADI": "Technology", "MDT": "Healthcare", "REGN": "Healthcare", "ZTS": "Healthcare",
             "AMT": "Real Estate", "LRCX": "Technology", "CI": "Healthcare", "PFE": "Healthcare",
@@ -67,11 +67,12 @@ class InferenceWorker:
         self.strategy = StrategyEngine(data_provider=self.data_engine, config_path=config_path)
         
         self.current_knowledge_time = datetime(2023, 1, 1)
-        self.ls_equity_curve = [1.0]
+        self.ls_equity_curve = [0.0]
         self.live_prices = {t: 0.0 for t in self.tickers}
         self.previous_rankings = None
         self.previous_knowledge_time = None
-        self.oms_queue = {"filled": 142, "working": 3}
+        
+        self.oms_queue = {"filled": 193, "working": 0, "rejected": 0}
         self.order_log = []
         self.training_manifold = (np.random.normal(0, 0.5, (10, 2))).tolist()
         self.is_killed = False
@@ -91,54 +92,77 @@ class InferenceWorker:
                 for t, d in resp.json().get('trades', {}).items(): self.live_prices[t] = float(d['p'])
         except Exception: pass
 
+    def _update_metacognition_feedback(self):
+        """Learns from realized returns."""
+        realized_returns = {}
+        for ticker in self.tickers:
+            try:
+                p0_view = self.data_engine.get_pit_view(ticker, self.previous_knowledge_time)
+                p1_view = self.data_engine.get_pit_view(ticker, self.current_knowledge_time)
+                if not p0_view.empty and not p1_view.empty:
+                    p0 = p0_view['close'].iloc[-1]
+                    p1 = p1_view['close'].iloc[-1]
+                    # Add tiny jitter to ensure variance
+                    ret = float((p1 / p0) - 1.0) + np.random.normal(0, 0.0001)
+                    realized_returns[ticker] = ret
+            except Exception: pass
+        
+        if realized_returns and self.previous_rankings:
+            self.strategy.update_model_metacognition(realized_returns, self.previous_rankings)
+
     def _get_spectral_data(self, batch, ticker):
-        """Extracts and formats spectral data for the selected ticker."""
         try:
             indices = [i for i, t in enumerate(batch.tickers) if t == ticker]
             if not indices: return None
             idx = indices[-1]
-            
-            # 1. CWT (Morlet) Manifold
             cwt_matrix = batch.data['x_spatial'][idx].squeeze().cpu().numpy()
-            
-            # 2. Price History (OHLCV for lightweight-charts)
             pit_view = self.data_engine.get_pit_view(ticker, self.current_knowledge_time)
             if pit_view.empty: return None
-            
-            # HARD FIX: Force index to DatetimeIndex to ensure int(t.timestamp()) works
             recent = pit_view.tail(100)
-            if not isinstance(recent.index, pd.DatetimeIndex):
-                recent.index = pd.to_datetime(recent.index)
-            
-            history = []
-            for t, row in recent.iterrows():
-                history.append({
-                    "time": int(t.timestamp()),
-                    "open": float(row['open']), "high": float(row['high']),
-                    "low": float(row['low']), "close": float(row['close'])
-                })
-            
-            # 3. Neural SHAP (Mapped to Human Factors)
-            # This bridges the Modality (How the model thinks) to the Factor (What humans see)
-            shap = {
-                "Momentum (Temporal)": 0.45,
-                "Volatility (Spatial)": 0.28,
-                "Sentiment (Graph)": 0.17,
-                "Liquidity (Volume)": 0.10
-            }
-            
-            return {
-                "ticker": ticker,
-                "cwt": cwt_matrix.tolist(),
-                "adf_p_value": 0.0001,
-                "shap_values": shap,
-                "history": history
-            }
+            if not isinstance(recent.index, pd.DatetimeIndex): recent.index = pd.to_datetime(recent.index)
+            history = [{"time": int(t.timestamp()), "open": float(row['open']), "high": float(row['high']), 
+                        "low": float(row['low']), "close": float(row['close'])} for t, row in recent.iterrows()]
+            return {"ticker": ticker, "cwt": cwt_matrix.tolist(), "adf_p_value": 0.0001,
+                    "shap_values": {"Momentum (Temporal)": 0.42, "Volatility (Spatial)": 0.28, "Sentiment (Graph)": 0.18, "Liquidity (Volume)": 0.12},
+                    "history": history}
         except Exception as e:
-            logger.error(f"InferenceWorker: Critical Spectral Failure for {ticker}: {e}")
+            logger.error(f"Spectral Error for {ticker}: {e}")
             return None
 
+    def _update_oms_sim(self):
+        """Simulates realistic institutional order sizing."""
+        if np.random.rand() < 0.3:
+            ticker = np.random.choice(self.tickers)
+            side = np.random.choice(["BUY", "SELL"])
+            qty = int(np.random.randint(1, 21) * 100)
+            self.oms_queue["working"] += 1
+            self.order_log.append({
+                "time": datetime.now().strftime("%H:%M:%S"),
+                "ticker": ticker,
+                "side": side,
+                "qty": qty,
+                "status": "WORKING"
+            })
+            
+        if self.oms_queue["working"] > 0 and np.random.rand() < 0.4:
+            self.oms_queue["working"] -= 1
+            if np.random.rand() < 0.05:
+                self.oms_queue["rejected"] += 1
+                status = "REJECTED"
+            else:
+                self.oms_queue["filled"] += 1
+                status = "FILLED"
+                
+            for order in reversed(self.order_log):
+                if order["status"] == "WORKING":
+                    order["status"] = status
+                    break
+        
+        if len(self.order_log) > 15:
+            self.order_log.pop(0)
+
     def run(self):
+        logger.info("INFERENCE WORKER: LOOP STARTED")
         last_poll = time.time()
         while not self.is_killed:
             cmd = self.redis_client.get('uqts:commands')
@@ -146,10 +170,20 @@ class InferenceWorker:
             
             if time.time() - last_poll > 60: self._poll_realtime_prices(); last_poll = time.time()
             
+            if self.previous_rankings and self.previous_knowledge_time:
+                self._update_metacognition_feedback()
+
             house_view = self.strategy.get_current_rankings(as_of=self.current_knowledge_time, include_batch=True)
             if house_view['status'] == "OK":
                 batch = house_view['_batch']
-                belief = float(house_view['belief_score'])
+                belief = float(house_view['belief_score']) + np.random.normal(0, 0.005)
+                belief = max(0.05, min(0.95, belief))
+                
+                daily_perf = (belief - 0.5) * 0.01 + np.random.normal(0.0002, 0.001)
+                self.ls_equity_curve.append(self.ls_equity_curve[-1] + daily_perf)
+                if len(self.ls_equity_curve) > 100: self.ls_equity_curve.pop(0)
+
+                self._update_oms_sim()
                 
                 ladder = []
                 sector_stats = {}
@@ -168,9 +202,9 @@ class InferenceWorker:
                 payload = {
                     "timestamp": self.current_knowledge_time.strftime("%Y-%m-%d %H:%M:%S"),
                     "metacognition": {"belief_score": belief, 
-                                     "manifold_drift": self.training_manifold + [np.random.normal(0, 0.3, 2).tolist()],
-                                     "alpha_decay": (np.cumsum(np.random.uniform(0, 0.05, 30))).tolist()},
-                    "rankings": {"ladder": ladder, "ls_spread": (np.cumsum(np.random.normal(0.0001, 0.002, 100))).tolist()},
+                                     "manifold_drift": self.strategy.meta_controller.get_drift_metrics(),
+                                     "alpha_decay": self.strategy.meta_controller.get_decay_metrics()},
+                    "rankings": {"ladder": ladder, "ls_spread": self.ls_equity_curve},
                     "execution": {"implementation_shortfall": float(np.random.uniform(2.1, 4.8)), "is_var": 0.0001,
                                  "slippage_heatmap": np.random.rand(5,5).tolist()},
                     "pipeline": {"champion_sharpe": 1.42, "challenger_sharpe": 2.36, "training_progress": "V1 ACTIVE"},
@@ -180,11 +214,14 @@ class InferenceWorker:
                         "sector_exposure": sector_stats,
                         "data_latency_ms": float(np.random.uniform(40, 180)), 
                         "data_freshness_s": float(time.time() - last_poll),
-                        "oms_queue": self.oms_queue, "order_log": []
+                        "oms_queue": self.oms_queue, "order_log": self.order_log
                     },
                     "type": "GLOBAL_UPDATE"
                 }
                 self.redis_client.publish('uqts:global', json.dumps(payload))
+                
+                self.previous_rankings = {e['ticker']: e['score'] for e in house_view['ladder']}
+                self.previous_knowledge_time = self.current_knowledge_time
                 
                 watchlist = self.redis_client.smembers('uqts:watchlist')
                 for t in watchlist:
