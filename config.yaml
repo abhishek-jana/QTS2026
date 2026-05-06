@@ -102,7 +102,7 @@ universe:
     - MCO
 
 data_engine:
-  provider: "alpaca"                # Institutional Choice
+  provider: "alpaca"
   storage_path: "data/uqts_bitemporal.ddb"
   start_date: "2016-01-01"
   features:
@@ -120,6 +120,7 @@ signal_physics:
     wavelet: "mexh"
 
 model_pipeline:
+  model_path: "models/challenger_v1.pt"
   architecture:
     hidden_dim: 64
     vit_heads: 4
@@ -128,6 +129,19 @@ model_pipeline:
     lr: 0.002
     epochs: 25
     batch_size: 1024
-    early_stopping_patience: 5
-    weight_decay: 0.0002
-    dropout: 0.5
+    early_stopping_patience: 3
+    weight_decay: 0.0001
+    dropout: 0.4
+
+risk_metacontroller:
+  prior_belief: 0.75             # Confirmed Alpha Edge (IC 0.036) justification
+
+execution_muscle:
+  oms:
+    base_url: "https://paper-api.alpaca.markets"
+  mpc_solver:
+    horizon: 5
+    impact_penalty: 0.01
+    variance_penalty: 0.1
+  min_belief_threshold: 0.65     # Don't trade if Bayesian belief drops below this
+  max_position_size: 0.05        # 5% max allocation per ticker

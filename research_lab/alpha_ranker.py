@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import numpy as np
+import copy
 from dataclasses import dataclass
 from typing import List, Dict, Optional, Tuple, Any
 from qts_core.logger import logger
@@ -58,11 +59,12 @@ class RankNet(nn.Module):
         self.to(device); self.train(); optimizer = optim.Adam(self.parameters(), lr=lr, weight_decay=weight_decay)
         scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
         criterion = PairwiseRankLoss(); scaler = torch.amp.GradScaler('cuda', enabled=(device.type == 'cuda'))
+        
+        best_val_loss, wait, best_state = float('inf'), 0, None
+
         if hasattr(dataset, 'data') and hasattr(dataset, 'labels'):
             ns = len(dataset.labels); abs_ = min(batch_size, ns); nb = ns // abs_
             if nb == 0: nb, abs_ = 1, ns
-            bl, wait = float('inf'), 0
-            log_interval = max(1, nb // 10)
             for epoch in range(epochs):
                 tl, indices = 0, torch.randperm(ns, device=device)
                 for b in range(nb):
@@ -75,8 +77,7 @@ class RankNet(nn.Module):
                         loss = criterion(si, sj, torch.sign(yb[ii] - yb[jj]).unsqueeze(1))
                     scaler.scale(loss).backward(); scaler.unscale_(optimizer); torch.nn.utils.clip_grad_norm_(self.parameters(), 1.0)
                     scaler.step(optimizer); scaler.update(); tl += loss.item()
-                    if verbose and b % log_interval == 0: logger.info(f"   > Epoch {epoch+1} Progress: {100 * b // nb}% | Loss: {loss.item():.4f}")
-                scheduler.step(); al = tl / max(1, nb); v_msg = ""
+                scheduler.step(); al = tl / max(1, nb); v_loss_val = None
                 if val_dataset:
                     self.eval()
                     with torch.no_grad(), torch.amp.autocast('cuda', enabled=(device.type == 'cuda')):
@@ -84,19 +85,28 @@ class RankNet(nn.Module):
                         if len(v_idx) >= 2:
                             vii, vjj = torch.randperm(len(v_idx), device=device), torch.randperm(len(v_idx), device=device)
                             v_ini, v_inj = {k: v[v_idx][vii] for k, v in val_dataset.data.items()}, {k: v[v_idx][vjj] for k, v in val_dataset.data.items()}
-                            v_loss = criterion(self.forward(v_ini), self.forward(v_inj), torch.sign(val_dataset.labels[v_idx][vii] - val_dataset.labels[v_idx][vjj]).unsqueeze(1))
-                            v_msg = f" | Val Loss: {v_loss.item():.4f}"
+                            v_loss_val = criterion(self.forward(v_ini), self.forward(v_inj), torch.sign(val_dataset.labels[v_idx][vii] - val_dataset.labels[v_idx][vjj]).unsqueeze(1)).item()
                     self.train()
-                if verbose: logger.success(f"Epoch {epoch+1}/{epochs} Complete - Avg Loss: {al:.6f}{v_msg}")
-                if al < bl: bl, wait = al, 0
+                
+                # SENIOR FIX: Early Stopping on Validation Loss with State Restoration
+                if v_loss_val is not None:
+                    if verbose: logger.info(f"   [Epoch {epoch+1}/{epochs}] Loss: {al:.6f} | Val Loss: {v_loss_val:.4f}")
+                    if v_loss_val < best_val_loss:
+                        best_val_loss, wait = v_loss_val, 0
+                        best_state = copy.deepcopy(self.state_dict())
+                    else:
+                        wait += 1
+                        if wait >= patience:
+                            logger.warning(f"Early stopping at epoch {epoch+1}. Restoring best state (Val Loss: {best_val_loss:.4f})")
+                            self.load_state_dict(best_state); break
                 else:
-                    wait += 1
-                    if wait >= patience: logger.warning(f"Early stopping at epoch {epoch+1}"); break
+                    if verbose: logger.info(f"   [Epoch {epoch+1}/{epochs}] Loss: {al:.6f}")
             return
+        
+        # B. SIMPLE TENSOR LOGIC (Champion/MLP)
         if isinstance(dataset, tuple):
             X_all, y_all = dataset; ns = len(y_all); abs_ = min(batch_size, ns); nb = ns // abs_
             if nb == 0: nb, abs_ = 1, ns
-            bl, wait = float('inf'), 0
             for epoch in range(epochs):
                 tl, indices = 0, torch.randperm(ns, device=device)
                 for b in range(nb):
@@ -109,10 +119,7 @@ class RankNet(nn.Module):
                     scaler.scale(loss).backward(); scaler.step(optimizer); scaler.update(); tl += loss.item()
                 scheduler.step(); al = tl / max(1, nb)
                 if verbose: logger.info(f"   [Epoch {epoch+1}/{epochs}] Loss: {al:.6f}")
-                if al < bl: bl, wait = al, 0
-                else:
-                    wait += 1
-                    if wait >= patience: break
+            return
 
     @torch.jit.ignore
     def predict_dataset(self, dataset, batch_size: int = 1024):
@@ -140,13 +147,14 @@ class MultiModalRankNet(RankNet):
         if specs is None:
             scales, lookback = kwargs.get('scales', 32), kwargs.get('lookback', 63)
             specs = [InputSpec(name='x_seq', shape=(lookback, 1), type='seq'), InputSpec(name='x_spatial', shape=(1, scales, lookback), type='spatial')]
-        dropout = kwargs.get('dropout', 0.5)
+        dropout = kwargs.get('dropout', 0.4)
         super(MultiModalRankNet, self).__init__(input_dim=hidden_dim, hidden_dim=hidden_dim, dropout=dropout)
-        self.specs, self.hidden_dim, self.encoders = specs, hidden_dim, nn.ModuleDict()
+        self.specs, self.hidden_dim, self.encoders, self.norms = specs, hidden_dim, nn.ModuleDict(), nn.ModuleDict()
         vh, gl = kwargs.get('vit_heads', 4), kwargs.get('gnn_layers', 2)
-        # Gating Layer: Learn which modality to trust
         self.gate = nn.Sequential(nn.Linear(hidden_dim * len(specs), len(specs)), nn.Softmax(dim=1))
         for spec in specs:
+            # SENIOR FIX: Individual LayerNorm for each stream before fusion
+            self.norms[spec.name] = nn.LayerNorm(hidden_dim)
             if spec.type == 'seq': self.encoders[spec.name] = nn.LSTM(input_size=spec.shape[-1], hidden_size=hidden_dim, num_layers=2, batch_first=True, dropout=dropout)
             elif spec.type == 'spatial':
                 img_h = spec.shape[1]
@@ -156,15 +164,12 @@ class MultiModalRankNet(RankNet):
         embs = []
         for spec in self.specs:
             x = inputs[spec.name]
-            if spec.type == 'seq': _, (h_n, _) = self.encoders[spec.name](x); embs.append(h_n[-1])
-            elif spec.type == 'spatial': embs.append(self.encoders[spec.name](x))
-            elif spec.type == 'graph': embs.append(self.encoders[spec.name](x))
-        # SENIOR FIX: Modality Gating (Learned weights for LSTM vs ViT vs GNN)
-        stacked_embs = torch.stack(embs, dim=1) # [B, N, D]
-        flat_embs = torch.cat(embs, dim=1)      # [B, N*D]
-        weights = self.gate(flat_embs).unsqueeze(-1) # [B, N, 1]
-        fused = (stacked_embs * weights).sum(dim=1)  # [B, D]
-        return self.model(fused)
+            if spec.type == 'seq': _, (h_n, _) = self.encoders[spec.name](x); e = h_n[-1]
+            else: e = self.encoders[spec.name](x)
+            embs.append(self.norms[spec.name](e)) # Apply scaling
+        stacked_embs = torch.stack(embs, dim=1); flat_embs = torch.cat(embs, dim=1)
+        weights = self.gate(flat_embs).unsqueeze(-1)
+        return self.model((stacked_embs * weights).sum(dim=1))
 
 class PairwiseRankLoss(nn.Module):
     def __init__(self, sigma: float = 1.0): super(PairwiseRankLoss, self).__init__(); self.sigma = sigma
