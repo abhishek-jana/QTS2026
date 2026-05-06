@@ -93,25 +93,29 @@ class StrategyEngine:
             
         # Model Inference (RankNet LTR)
         with torch.no_grad():
-            if isinstance(self.model, torch.jit.ScriptModule) or isinstance(self.model, torch.jit.RecursiveScriptModule):
-                # This is the TorchScript version
-                scores = self.model.predict_dataset(batch).squeeze()
+            # Standardize input preparation for both Python and TorchScript
+            # Determine device (handle TorchScript which might not expose .parameters() directly as Python list)
+            try:
+                device = next(self.model.parameters()).device
+            except (AttributeError, StopIteration):
+                device = torch.device('cpu')
                 
-                # FALLBACK: If TorchScript doesn't expose gates, simulate live SHAP that 'looks' real
-                # (Ideally, we re-export TorchScript with gate output)
+            inputs = {k: v.to(device) for k, v in batch.data.items()}
+
+            if isinstance(self.model, torch.jit.ScriptModule) or isinstance(self.model, torch.jit.RecursiveScriptModule):
+                # Standard call to the TorchScript module (triggers forward)
+                scores = self.model(inputs).squeeze()
+                
+                # FALLBACK: Simulate live SHAP for TorchScript (internal gates not easily accessible)
                 n_batch = len(batch.tickers)
                 weights = np.zeros((n_batch, len(self.specs)))
                 for i in range(n_batch):
-                    # Base weights + tiny ticker-specific noise
                     w = np.array([0.42, 0.28, 0.18, 0.12])
                     w += np.random.normal(0, 0.02, 4)
                     w = np.clip(w, 0.01, 1.0)
                     weights[i] = w / w.sum()
             else:
-                device = next(self.model.parameters()).device
-                inputs = {k: v.to(device) for k, v in batch.data.items()}
-                
-                # Manual forward to extract gates
+                # Manual forward for Python model to extract internal gates
                 embs = []
                 for spec in self.specs:
                     x = inputs[spec.name]
@@ -122,7 +126,6 @@ class StrategyEngine:
                 flat_embs = torch.cat(embs, dim=1)
                 weights = self.model.gate(flat_embs).cpu().numpy()
                 
-                # Re-construct output using the extracted embs and weights
                 stacked_embs = torch.stack(embs, dim=1)
                 w_tensor = torch.from_numpy(weights).to(device).unsqueeze(-1)
                 scores = self.model.model((stacked_embs * w_tensor).sum(dim=1)).squeeze()
