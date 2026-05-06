@@ -5,18 +5,17 @@ import os
 import numpy as np
 from datetime import datetime
 import alpaca_trade_api as tradeapi
-from alpaca_trade_api.stream import Stream
 from qts_core.logger import logger
 import redis
 
 class AsyncPaperBot:
     """
-    Event-driven Execution Engine for Alpaca.
+    Event-driven Execution Engine for Alpaca (Legacy v0.48 Compatible).
     Handles order submission, fill reconciliation, and live state tracking.
     """
     def __init__(self, config, starting_capital=None):
         self.config = config
-        self.starting_capital = starting_capital # If None, we will hydrate from account
+        self.starting_capital = starting_capital 
         self.api_key = os.getenv("ALPACA_API_KEY")
         self.api_secret = os.getenv("ALPACA_SECRET_KEY")
         self.base_url = self.config['execution_muscle']['oms']['base_url']
@@ -26,57 +25,66 @@ class AsyncPaperBot:
         
         # Real-time state
         self.positions = {}
-        self.orders = {} # tracking our local order state
         self.oms_stats = {"filled": 0, "working": 0, "rejected": 0}
         self.order_log = []
+        
+        # Legacy Stream Connection
+        self.conn = tradeapi.StreamConn(
+            self.api_key, 
+            self.api_secret, 
+            base_url=self.base_url,
+            data_url=self.base_url.replace("api", "data") # Simple heuristic for data URL
+        )
 
-    async def _on_trade_update(self, update):
-        """Callback for Alpaca trade stream."""
-        event = update.event
-        order = update.order
-        ticker = order['symbol']
-        
-        logger.info(f"ALpaca Stream: {event} for {ticker} | Qty: {order['qty']}")
-        
-        status_map = {
-            "fill": "FILLED",
-            "partial_fill": "WORKING",
-            "canceled": "REJECTED",
-            "rejected": "REJECTED",
-            "new": "WORKING"
-        }
-        
-        new_status = status_map.get(event, "WORKING")
-        
-        # Update UI via Redis
-        log_entry = {
-            "time": datetime.now().strftime("%H:%M:%S"),
-            "ticker": ticker,
-            "side": order['side'].upper(),
-            "qty": int(float(order['qty'])),
-            "status": new_status
-        }
-        
-        self.order_log.append(log_entry)
-        if len(self.order_log) > 20: self.order_log.pop(0)
-        
-        # Update stats
-        if event == "fill": 
-            self.oms_stats["filled"] += 1
-            if self.oms_stats["working"] > 0: self.oms_stats["working"] -= 1
-        elif event == "rejected" or event == "canceled":
-            self.oms_stats["rejected"] += 1
-            if self.oms_stats["working"] > 0: self.oms_stats["working"] -= 1
-        elif event == "new":
-            self.oms_stats["working"] += 1
+        # Register Legacy Handlers
+        @self.conn.on(r'trade_updates')
+        async def on_trade_updates(conn, channel, data):
+            await self._handle_trade_update(data)
+
+    async def _handle_trade_update(self, data):
+        """Reconciles fills from legacy stream data."""
+        try:
+            event = data.event
+            order = data.order
+            ticker = order['symbol']
+            
+            logger.info(f"Alpaca Stream: {event} for {ticker}")
+            
+            status_map = {
+                "fill": "FILLED",
+                "partial_fill": "WORKING",
+                "canceled": "REJECTED",
+                "rejected": "REJECTED",
+                "new": "WORKING"
+            }
+            
+            new_status = status_map.get(event, "WORKING")
+            
+            log_entry = {
+                "time": datetime.now().strftime("%H:%M:%S"),
+                "ticker": ticker,
+                "side": order['side'].upper(),
+                "qty": int(float(order['qty'])),
+                "status": new_status
+            }
+            
+            self.order_log.append(log_entry)
+            if len(self.order_log) > 20: self.order_log.pop(0)
+            
+            if event == "fill": 
+                self.oms_stats["filled"] += 1
+                if self.oms_stats["working"] > 0: self.oms_stats["working"] -= 1
+            elif event in ["rejected", "canceled"]:
+                self.oms_stats["rejected"] += 1
+                if self.oms_stats["working"] > 0: self.oms_stats["working"] -= 1
+            elif event == "new":
+                self.oms_stats["working"] += 1
+        except Exception as e:
+            logger.error(f"Stream Handling Error: {e}")
 
     def submit_order(self, ticker, side, qty):
         """Submit order to Alpaca REST API."""
         try:
-            # Safety checks from config
-            max_notional = self.config['execution_muscle']['safety_limits']['max_notional_per_order']
-            # Simplified safety: assume price $100 if unknown for now (real bot would pull latest quote)
-            
             self.rest_api.submit_order(
                 symbol=ticker,
                 qty=qty,
@@ -96,15 +104,12 @@ class AsyncPaperBot:
             acct = self.rest_api.get_account()
             portfolio_value = float(acct.portfolio_value)
             
-            # HYDRATION LOGIC: If this is first run, assume current value is baseline
             if self.starting_capital is None or self.starting_capital == 1000000.0:
                 self.starting_capital = portfolio_value
                 logger.info(f"Bot: Initialized starting capital to ${self.starting_capital:,.2f}")
 
             pos = self.rest_api.list_positions()
             self.positions = {p.symbol: float(p.qty) for p in pos}
-            
-            # Total P&L since initialization (starting capital)
             total_pnl = portfolio_value - self.starting_capital
             
             logger.info(f"Bot: Account Value ${portfolio_value:,.2f} | Total P&L: ${total_pnl:,.2f}")
@@ -114,10 +119,10 @@ class AsyncPaperBot:
             return self.starting_capital or 100000.0, 0.0
 
     async def run_stream(self):
-        """Run the WebSocket stream."""
+        """Run the legacy WebSocket stream."""
         try:
-            stream = Stream(self.api_key, self.api_secret, base_url=self.base_url, data_feed='iex')
-            stream.subscribe_trade_updates(self._on_trade_update)
-            await stream._run_forever()
+            logger.info("Bot: Starting Legacy WebSocket Stream...")
+            await self.conn.run(['trade_updates'])
         except Exception as e:
             logger.error(f"Alpaca Stream Error: {e}")
+            await asyncio.sleep(5) # Backoff
