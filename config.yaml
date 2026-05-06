@@ -137,6 +137,7 @@ risk_metacontroller:
   prior_belief: 0.75
 
 execution_muscle:
+  trading_mode: "paper" # Options: "sim", "paper", "live"
   oms:
     base_url: "https://paper-api.alpaca.markets"
   mpc_solver:
@@ -145,6 +146,10 @@ execution_muscle:
     variance_penalty: 0.1
   min_belief_threshold: 0.65
   max_position_size: 0.05
+  safety_limits:
+    max_notional_per_order: 10000.0
+    max_total_leverage: 2.5
+    kill_switch_enabled: true
 
 ui_cockpit:
   update_interval_ms: 1000 # Pulse rate for Mission Control

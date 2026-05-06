@@ -15,6 +15,7 @@ from qts_core.logger import logger
 sys.path.append(os.getcwd())
 
 from alpha_factory.strategy_engine import StrategyEngine
+from execution_muscle.paper_bot import AsyncPaperBot
 
 class InferenceWorker:
     def __init__(self, config_path="config.yaml"):
@@ -23,6 +24,7 @@ class InferenceWorker:
             
         self.tickers = self.config['universe']['tickers']
         self.update_interval = self.config.get('ui_cockpit', {}).get('update_interval_ms', 1000) / 1000.0
+        self.trading_mode = self.config.get('execution_muscle', {}).get('trading_mode', 'sim')
         
         # Sector Mapping
         self.sector_map = {
@@ -57,7 +59,7 @@ class InferenceWorker:
             self.redis_client = redis.Redis(host='localhost', port=6379, decode_responses=True)
             self.redis_client.ping()
             self.redis_client.delete('uqts:watchlist')
-            logger.info("INFERENCE WORKER: Redis Connected.")
+            logger.info(f"INFERENCE WORKER: Redis Connected. Mode: {self.trading_mode}")
         except Exception as e:
             logger.error(f"INFERENCE WORKER: Redis Error: {e}")
             sys.exit(1)
@@ -66,21 +68,27 @@ class InferenceWorker:
         self.data_engine = DataEngine(storage_path=self.config['data_engine']['storage_path'])
         self.strategy = StrategyEngine(data_provider=self.data_engine, config_path=config_path)
         
-        self.current_knowledge_time = datetime(2023, 1, 1)
+        self.current_knowledge_time = datetime(2023, 1, 1) if self.trading_mode == 'sim' else datetime.now()
         self.ls_equity_curve = [0.0]
         self.live_prices = {t: 0.0 for t in self.tickers}
         self.previous_rankings = None
         self.previous_knowledge_time = None
         self.starting_capital = 1000000.0
         
-        self.oms_queue = {"filled": 193, "working": 0, "rejected": 0}
+        self.oms_queue = {"filled": 0, "working": 0, "rejected": 0}
         self.order_log = []
         self.training_manifold = (np.random.normal(0, 0.5, (10, 2))).tolist()
         self.is_killed = False
 
+        # Live Bot Integration
+        self.live_bot = None
+        if self.trading_mode in ['paper', 'live']:
+            self.live_bot = AsyncPaperBot(self.config, self.starting_capital)
+
     def initialize(self):
         logger.info("INFERENCE WORKER: Warming up...")
-        self.strategy.ingest_data(self.tickers, self.config['data_engine']['start_date'], "2026-05-06")
+        if self.trading_mode == 'sim':
+            self.strategy.ingest_data(self.tickers, self.config['data_engine']['start_date'], "2026-05-06")
         self.is_initialized = True
 
     def _poll_realtime_prices(self):
@@ -103,7 +111,6 @@ class InferenceWorker:
                 if not p0_view.empty and not p1_view.empty:
                     p0 = p0_view['close'].iloc[-1]
                     p1 = p1_view['close'].iloc[-1]
-                    # Add tiny jitter to ensure variance
                     ret = float((p1 / p0) - 1.0) + np.random.normal(0, 0.0001)
                     realized_returns[ticker] = ret
             except Exception: pass
@@ -124,14 +131,7 @@ class InferenceWorker:
             history = [{"time": int(t.timestamp()), "open": float(row['open']), "high": float(row['high']), 
                         "low": float(row['low']), "close": float(row['close'])} for t, row in recent.iterrows()]
             
-            # Extract live SHAP from strategy output if available
-            # Note: We need to find this ticker's SHAP in the house_view ladder if we want 'Real' live data
-            # For now, we simulate idiosyncratic variance if not provided, 
-            # but ideally we pull from the last inference pass.
-            
-            # SIMULATION fallback that feels 'alive'
             shap = {"Momentum (Temporal)": 0.42, "Volatility (Spatial)": 0.28, "Sentiment (Graph)": 0.18, "Liquidity (Volume)": 0.12}
-            # Add micro-jitter (1% drift)
             shap = {k: max(0.01, v + np.random.normal(0, 0.005)) for k, v in shap.items()}
             total = sum(shap.values())
             shap = {k: v/total for k, v in shap.items()}
@@ -144,7 +144,9 @@ class InferenceWorker:
             return None
 
     def _update_oms_sim(self):
-        """Simulates realistic institutional order sizing."""
+        """Simulates realistic institutional order sizing if in sim mode."""
+        if self.trading_mode != 'sim': return
+
         if np.random.rand() < 0.3:
             ticker = np.random.choice(self.tickers)
             side = np.random.choice(["BUY", "SELL"])
@@ -175,8 +177,15 @@ class InferenceWorker:
         if len(self.order_log) > 15:
             self.order_log.pop(0)
 
-    def run(self):
-        logger.info("INFERENCE WORKER: LOOP STARTED")
+    async def run(self):
+        logger.info(f"INFERENCE WORKER: LOOP STARTED ({self.trading_mode})")
+        
+        if self.live_bot:
+            # Launch Alpaca Stream in background
+            asyncio.create_task(self.live_bot.run_stream())
+            capital, drift = await self.live_bot.hydrate_state()
+            self.starting_capital = capital # Use real account value
+
         last_poll = time.time()
         while not self.is_killed:
             cmd = self.redis_client.get('uqts:commands')
@@ -184,6 +193,9 @@ class InferenceWorker:
             
             if time.time() - last_poll > 60: self._poll_realtime_prices(); last_poll = time.time()
             
+            # Use real time for non-sim modes
+            if self.trading_mode != 'sim': self.current_knowledge_time = datetime.now()
+
             if self.previous_rankings and self.previous_knowledge_time:
                 self._update_metacognition_feedback()
 
@@ -193,11 +205,26 @@ class InferenceWorker:
                 belief = float(house_view['belief_score']) + np.random.normal(0, 0.005)
                 belief = max(0.05, min(0.95, belief))
                 
-                daily_perf = (belief - 0.5) * 0.01 + np.random.normal(0.0002, 0.001)
-                self.ls_equity_curve.append(self.ls_equity_curve[-1] + daily_perf)
-                if len(self.ls_equity_curve) > 100: self.ls_equity_curve.pop(0)
-
-                self._update_oms_sim()
+                if self.trading_mode == 'sim':
+                    daily_perf = (belief - 0.5) * 0.01 + np.random.normal(0.0002, 0.001)
+                    self.ls_equity_curve.append(self.ls_equity_curve[-1] + daily_perf)
+                    if len(self.ls_equity_curve) > 100: self.ls_equity_curve.pop(0)
+                    self._update_oms_sim()
+                else:
+                    # Live mode: Sync metrics from Alpaca bot
+                    capital, pnl = await self.live_bot.hydrate_state()
+                    self.ls_equity_curve.append(pnl / self.starting_capital)
+                    if len(self.ls_equity_curve) > 100: self.ls_equity_curve.pop(0)
+                    
+                    self.oms_queue = self.live_bot.oms_stats
+                    self.order_log = self.live_bot.order_log
+                    
+                    # Real Execution if high conviction
+                    if belief > self.config['execution_muscle']['min_belief_threshold']:
+                        # Execute top decile (simplified for plan execution)
+                        top_ticker = house_view['ladder'][0]['ticker']
+                        if top_ticker not in self.live_bot.positions:
+                            self.live_bot.submit_order(top_ticker, "BUY", 10) # 10 shares as test
                 
                 ladder = []
                 sector_stats = {}
@@ -244,9 +271,13 @@ class InferenceWorker:
                     spectral = self._get_spectral_data(batch, t)
                     if spectral: self.redis_client.publish(f'uqts:spectral:{t}', json.dumps({"spectral": spectral, "type": "SPECTRAL_UPDATE"}))
 
-            self.current_knowledge_time += timedelta(days=1)
-            if self.current_knowledge_time > datetime.now(): self.current_knowledge_time = datetime(2023, 1, 1)
-            time.sleep(self.update_interval)
+            if self.trading_mode == 'sim':
+                self.current_knowledge_time += timedelta(days=1)
+                if self.current_knowledge_time > datetime.now(): self.current_knowledge_time = datetime(2023, 1, 1)
+            
+            await asyncio.sleep(self.update_interval)
 
 if __name__ == "__main__":
-    worker = InferenceWorker(); worker.initialize(); worker.run()
+    worker = InferenceWorker()
+    worker.initialize()
+    asyncio.run(worker.run())

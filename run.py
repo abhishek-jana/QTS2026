@@ -22,7 +22,8 @@ def main():
     lab_parser.add_argument("--eval-only", action="store_true", help="Evaluation only")
     lab_parser.add_argument("--test-subset", action="store_true", help="Quick test subset")
 
-    subparsers.add_parser("prod", help="Run the Production Inference Worker")
+    subparsers.add_parser("prod", help="Run the Production Inference Worker (Sim Mode)")
+    subparsers.add_parser("live", help="Run the Live Paper Trading Worker (Alpaca Mode)")
     subparsers.add_parser("ui", help="Run the Cockpit Backend server")
 
     args = parser.parse_args()
@@ -39,9 +40,22 @@ def main():
                 datetime(2023, 1, 1), datetime.now(),
                 skip_train=args.eval_only
             )
-    elif args.command == "prod":
+    elif args.command in ["prod", "live"]:
+        import asyncio
+        import yaml
         from execution_muscle.inference_worker import InferenceWorker
-        worker = InferenceWorker(); worker.initialize(); worker.run()
+        
+        # Override config trading_mode if explicit 'live' command is used
+        if args.command == "live":
+            with open("config.yaml", "r") as f:
+                conf = yaml.safe_load(f)
+            conf['execution_muscle']['trading_mode'] = 'paper'
+            with open("config.yaml", "w") as f:
+                yaml.dump(conf, f)
+        
+        worker = InferenceWorker()
+        worker.initialize()
+        asyncio.run(worker.run())
     elif args.command == "ui":
         import uvicorn
         uvicorn.run("cockpit_backend.main:app", host="0.0.0.0", port=8000, reload=True)
