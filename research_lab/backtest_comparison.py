@@ -41,13 +41,13 @@ class BacktestOrchestrator:
         logger.info(f"📥 Collecting multi-regime training data ({start.date()} -> {end.date()})...")
         steps = self.universe.walk_forward(universe=self.tickers, start_date=start, end_date=end, stride=1, lookback=self.lookback, horizon=self.horizon, latest_only=True)
         if not steps: logger.error("❌ NO TRAINING SAMPLES PRODUCED."); raise ValueError("Empty dataset.")
-        all_x_seq, all_x_spatial, all_x_graph, all_y = [], [], [], []
+        all_x_seq, all_x_spatial, all_x_graph, all_y, all_times = [], [], [], [], []
         for step in steps:
             batch = step['batch']
-            all_x_seq.append(batch.data['x_seq']); all_x_spatial.append(batch.data['x_spatial']); all_x_graph.append(batch.data['x_graph']); all_y.append(batch.labels)
+            all_x_seq.append(batch.data['x_seq']); all_x_spatial.append(batch.data['x_spatial']); all_x_graph.append(batch.data['x_graph']); all_y.append(batch.labels); all_times.extend(batch.times)
         return MultiModalBatch(
             data={'x_seq': torch.cat(all_x_seq), 'x_spatial': torch.cat(all_x_spatial), 'x_graph': torch.cat(all_x_graph)},
-            labels=torch.cat(all_y), tickers=['COMBINED'] * len(torch.cat(all_y)), times=[datetime.now()] * len(torch.cat(all_y))
+            labels=torch.cat(all_y), tickers=['COMBINED'] * len(torch.cat(all_y)), times=all_times
         )
 
     def run_comparison(self, train_start: datetime, train_end: datetime, test_start: datetime, test_end: datetime, skip_train: bool = False):
@@ -56,16 +56,14 @@ class BacktestOrchestrator:
         hidden_dim, vh, gl = arch_config['hidden_dim'], arch_config['vit_heads'], arch_config['gnn_layers']
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         batch_size = self.config['model_pipeline']['training'].get('batch_size', 1024)
-        wd = self.config['model_pipeline']['training'].get('weight_decay', 0.00005)
-        do = self.config['model_pipeline']['training'].get('dropout', 0.3)
+        wd = self.config['model_pipeline']['training'].get('weight_decay', 0.0002)
+        do = self.config['model_pipeline']['training'].get('dropout', 0.5)
         
         champion = RankNet(input_dim=self.n_scales, hidden_dim=hidden_dim)
         specs = [InputSpec(name='x_seq', shape=(self.lookback, 1), type='seq'), InputSpec(name='x_spatial', shape=(1, self.n_scales, self.lookback), type='spatial'), InputSpec(name='x_graph', shape=(8,), type='graph')]
         challenger = MultiModalRankNet(specs=specs, hidden_dim=hidden_dim, vit_heads=vh, gnn_layers=gl, dropout=do)
         
         using_subset = len(self.tickers) < len(self.config['universe']['tickers'])
-        
-        # Add security globals for torch.load
         from datetime import datetime as dt_class
         torch.serialization.add_safe_globals([MultiModalBatch, dt_class, pd.Timestamp, pd._libs.tslibs.timestamps._unpickle_timestamp])
 
@@ -74,28 +72,27 @@ class BacktestOrchestrator:
             if os.path.exists(cache_path) and not using_subset:
                 logger.info(f"📦 LOADING CACHED TRAINING FEATURES: {cache_path}")
                 train_dataset = torch.load(cache_path, weights_only=True)
-                if len(train_dataset.labels) > 50000:
-                     logger.warning("⚠️ Cached dataset is REDUNDANT. Re-collecting UNIQUE windows.")
-                     train_dataset = self._collect_training_data(train_start, train_end); torch.save(train_dataset, cache_path)
+                if len(train_dataset.labels) > 50000: train_dataset = self._collect_training_data(train_start, train_end); torch.save(train_dataset, cache_path)
             else: 
                 train_dataset = self._collect_training_data(train_start, train_end)
                 if not using_subset: torch.save(train_dataset, cache_path)
             
-            nt = len(train_dataset.labels); n_train = int(nt * 0.8); idx = torch.randperm(nt)
-            val_dataset = MultiModalBatch(data={k: v[idx[n_train:]] for k, v in train_dataset.data.items()}, labels=train_dataset.labels[idx[n_train:]], tickers=['VAL'] * (nt - n_train), times=[datetime.now()] * (nt - n_train))
-            train_dataset = MultiModalBatch(data={k: v[idx[:n_train]] for k, v in train_dataset.data.items()}, labels=train_dataset.labels[idx[:n_train]], tickers=['TRAIN'] * n_train, times=[datetime.now()] * n_train)
+            # SENIOR FIX: TEMPORAL SPLIT (Predict the future, don't just random sample)
+            # Use data before 2022-06-01 for training, and after for validation.
+            cutoff_date = datetime(2022, 6, 1)
+            train_mask = [t < cutoff_date for t in train_dataset.times]
+            val_mask = [t >= cutoff_date for t in train_dataset.times]
+            
+            val_dataset = MultiModalBatch(data={k: v[val_mask] for k, v in train_dataset.data.items()}, labels=train_dataset.labels[val_mask], tickers=['VAL'] * sum(val_mask), times=[t for i, t in enumerate(train_dataset.times) if val_mask[i]])
+            train_dataset = MultiModalBatch(data={k: v[train_mask] for k, v in train_dataset.data.items()}, labels=train_dataset.labels[train_mask], tickers=['TRAIN'] * sum(train_mask), times=[t for i, t in enumerate(train_dataset.times) if train_mask[i]])
             
             if device.type == 'cuda': logger.info("🚀 MOVING DATASETS TO GPU VRAM..."); train_dataset = train_dataset.to(device); val_dataset = val_dataset.to(device)
-            
-            logger.info(f"🛠️ Training on {len(train_dataset.labels)} samples with {len(val_dataset.labels)} validation hold-out...")
+            logger.info(f"🛠️ Training on {len(train_dataset.labels)} samples with {len(val_dataset.labels)} TEMPORAL validation (Late 2022)...")
             ep, lr, pat = self.config['model_pipeline']['training']['epochs'], self.config['model_pipeline']['training']['lr'], self.config['model_pipeline']['training'].get('early_stopping_patience', 5)
-            
             logger.info("🏆 Training Champion (MLP)...")
             champion.fit((train_dataset.data['x_spatial'][:, 0, :, -1], train_dataset.labels), epochs=ep, lr=lr, device=device, batch_size=batch_size, patience=pat, weight_decay=wd)
-            
             logger.info("🚀 Training Challenger (Multi-Modal)...")
             challenger.fit(train_dataset, epochs=ep, lr=lr, device=device, batch_size=batch_size, patience=pat, weight_decay=wd, val_dataset=val_dataset)
-            
             os.makedirs("models", exist_ok=True); challenger.export("models/challenger_v1.pt"); torch.save(champion.state_dict(), "models/champion_baseline.pt")
             logger.success("✅ Training complete. Models exported.")
         else:
@@ -106,12 +103,8 @@ class BacktestOrchestrator:
 
         logger.info(f"🧪 Evaluating on OOS regime ({test_start.date()} -> {test_end.date()})...")
         oos_cache_path = "data/oos_steps.pt"
-        if os.path.exists(oos_cache_path) and not using_subset: 
-            logger.info(f"📦 LOADING CACHED BACKTEST DATA: {oos_cache_path}")
-            steps = torch.load(oos_cache_path, weights_only=True)
-        else: 
-            steps = self.universe.walk_forward(universe=self.tickers, start_date=test_start, end_date=test_end, stride=21, lookback=self.lookback, horizon=5, latest_only=True)
-            if not using_subset: torch.save(steps, oos_cache_path)
+        if os.path.exists(oos_cache_path) and not using_subset: steps = torch.load(oos_cache_path, weights_only=True)
+        else: steps = self.universe.walk_forward(universe=self.tickers, start_date=test_start, end_date=test_end, stride=21, lookback=self.lookback, horizon=5, latest_only=True); torch.save(steps, oos_cache_path)
             
         res = []
         for step in steps:
@@ -129,8 +122,7 @@ class BacktestOrchestrator:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="UQTS-2026 Production Backtest Orchestrator")
-    parser.add_argument("--ingest", action="store_true"); parser.add_argument("--train", action="store_true")
-    parser.add_argument("--eval-only", action="store_true"); parser.add_argument("--test-subset", action="store_true")
+    parser.add_argument("--ingest", action="store_true"); parser.add_argument("--train", action="store_true"); parser.add_argument("--eval-only", action="store_true"); parser.add_argument("--test-subset", action="store_true")
     args = parser.parse_args(); orchestrator = BacktestOrchestrator(tickers=["SPY", "NVDA", "TSM"] if args.test_subset else None)
     if args.ingest: orchestrator.run_ingestion()
     if args.train or (not args.ingest and not args.eval_only): orchestrator.run_comparison(datetime(2018, 1, 1), datetime(2022, 12, 31), datetime(2023, 1, 1), datetime.now(), skip_train=args.eval_only)

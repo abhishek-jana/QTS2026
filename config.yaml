@@ -29,11 +29,11 @@ model_pipeline:
   training:
     loss_function: "pairwise_ranknet"
     epochs: 25
-    lr: 0.001
-    batch_size: 8192
+    lr: 0.002
+    batch_size: 1024
     early_stopping_patience: 5
-    weight_decay: 0.0001           # L2 Regularization to prevent overfitting
-    dropout: 0.3                    # Dropout rate for feature fusion
+    weight_decay: 0.0002           # L2 Regularization to prevent overfitting
+    dropout: 0.5                    # Dropout rate for feature fusion
   model_path: "models/challenger_v1.pt" # Default production model
   wfo_engine:                       # Walk-Forward Optimization constraints
     train_window_months: 48         # 4 years of training

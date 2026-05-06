@@ -140,10 +140,12 @@ class MultiModalRankNet(RankNet):
         if specs is None:
             scales, lookback = kwargs.get('scales', 32), kwargs.get('lookback', 63)
             specs = [InputSpec(name='x_seq', shape=(lookback, 1), type='seq'), InputSpec(name='x_spatial', shape=(1, scales, lookback), type='spatial')]
-        dropout = kwargs.get('dropout', 0.3)
-        super(MultiModalRankNet, self).__init__(input_dim=hidden_dim * len(specs), hidden_dim=hidden_dim, dropout=dropout)
+        dropout = kwargs.get('dropout', 0.5)
+        super(MultiModalRankNet, self).__init__(input_dim=hidden_dim, hidden_dim=hidden_dim, dropout=dropout)
         self.specs, self.hidden_dim, self.encoders = specs, hidden_dim, nn.ModuleDict()
         vh, gl = kwargs.get('vit_heads', 4), kwargs.get('gnn_layers', 2)
+        # Gating Layer: Learn which modality to trust
+        self.gate = nn.Sequential(nn.Linear(hidden_dim * len(specs), len(specs)), nn.Softmax(dim=1))
         for spec in specs:
             if spec.type == 'seq': self.encoders[spec.name] = nn.LSTM(input_size=spec.shape[-1], hidden_size=hidden_dim, num_layers=2, batch_first=True, dropout=dropout)
             elif spec.type == 'spatial':
@@ -157,7 +159,12 @@ class MultiModalRankNet(RankNet):
             if spec.type == 'seq': _, (h_n, _) = self.encoders[spec.name](x); embs.append(h_n[-1])
             elif spec.type == 'spatial': embs.append(self.encoders[spec.name](x))
             elif spec.type == 'graph': embs.append(self.encoders[spec.name](x))
-        return self.model(torch.cat(embs, dim=1))
+        # SENIOR FIX: Modality Gating (Learned weights for LSTM vs ViT vs GNN)
+        stacked_embs = torch.stack(embs, dim=1) # [B, N, D]
+        flat_embs = torch.cat(embs, dim=1)      # [B, N*D]
+        weights = self.gate(flat_embs).unsqueeze(-1) # [B, N, 1]
+        fused = (stacked_embs * weights).sum(dim=1)  # [B, D]
+        return self.model(fused)
 
 class PairwiseRankLoss(nn.Module):
     def __init__(self, sigma: float = 1.0): super(PairwiseRankLoss, self).__init__(); self.sigma = sigma
