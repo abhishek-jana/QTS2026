@@ -1,66 +1,132 @@
-# UQTS-2026 Institutional Configuration Matrix
-
 universe:
-  benchmark: "SPY"
-  tickers: ["SPY", "NVDA", "TSM", "AAPL", "MSFT", "GOOG", "AMZN", "WMT", "COST", "UPS", "JPM", "GS", "V", "XOM", "CVX", "CAT", "TSLA", "META", "UNH", "LLY"]
+  tickers:
+    - SPY
+    - AAPL
+    - MSFT
+    - NVDA
+    - GOOGL
+    - AMZN
+    - META
+    - TSLA
+    - LLY
+    - UNH
+    - JPM
+    - V
+    - MA
+    - AVGO
+    - HD
+    - PG
+    - COST
+    - JNJ
+    - ABBV
+    - MRK
+    - BAC
+    - CRM
+    - ORCL
+    - ADBE
+    - AMD
+    - PEP
+    - KO
+    - TMO
+    - WMT
+    - MCD
+    - CSCO
+    - NFLX
+    - ABT
+    - DHR
+    - WFC
+    - ACN
+    - QCOM
+    - LIN
+    - GE
+    - PM
+    - TXN
+    - INTU
+    - AMGN
+    - VZ
+    - AMAT
+    - UNP
+    - LOW
+    - BX
+    - GS
+    - ISRG
+    - HON
+    - MS
+    - CVS
+    - COP
+    - IBM
+    - BA
+    - SPGI
+    - CAT
+    - LMT
+    - RTX
+    - DE
+    - TJX
+    - BKNG
+    - BLK
+    - ELV
+    - MU
+    - SCHW
+    - GILD
+    - PLD
+    - SBUX
+    - MMC
+    - MO
+    - CB
+    - ADI
+    - MDT
+    - REGN
+    - ZTS
+    - AMT
+    - LRCX
+    - CI
+    - PFE
+    - SYK
+    - BSX
+    - FI
+    - ADP
+    - PGR
+    - PSX
+    - EOG
+    - VRTX
+    - ITW
+    - SLB
+    - T
+    - MPC
+    - ETN
+    - BDX
+    - CME
+    - EQIX
+    - SNPS
+    - KLAC
+    - MCO
 
 data_engine:
-  provider: "yfinance"              # Switched to yfinance for ease of use
-  storage_type: "duckdb"            # Transitioning from in-memory pandas
-  db_path: "./data/uqts_bitemporal.ddb"
-  start_date: "2016-01-01"          # 2-Year burn-in buffer for d=0.4
+  storage_path: "data/uqts_bitemporal.ddb"
+  start_date: "2016-01-01"
+  features:
+    - close
+    - volume
 
 signal_physics:
-  lookback_days: 63                 # ~1 Trading Quarter
-  horizon_days: 21                  # ~1 Trading Month
-  math_padding: 100                 # Buffer for FD and Wavelet stability
+  lookback_days: 63
+  horizon_days: 21
+  math_padding: 100
   fractional_differentiation:
     d_param: 0.4
-    window_type: "expanding"
   wavelet_transform:
-    type: "morlet"
-    scales: [2, 4, 8, 16, 32, 64, 128, 256] # Dyadic scales for spectrograms
+    scales: [1, 2, 4, 8, 16, 32, 64, 128]
+    wavelet: "mexh"
 
 model_pipeline:
   architecture:
     hidden_dim: 64
-    vit_heads: 4                    # Vision Transformer heads for 2D Wavelets
-    gnn_layers: 2                   # Graph layers for sector cross-talk
+    vit_heads: 4
+    gnn_layers: 2
   training:
-    loss_function: "pairwise_ranknet"
-    epochs: 25
     lr: 0.002
+    epochs: 25
     batch_size: 1024
     early_stopping_patience: 5
-    weight_decay: 0.0002           # L2 Regularization to prevent overfitting
-    dropout: 0.5                    # Dropout rate for feature fusion
-  model_path: "models/challenger_v1.pt" # Default production model
-  wfo_engine:                       # Walk-Forward Optimization constraints
-    train_window_months: 48         # 4 years of training
-    test_window_months: 12          # 1 year out-of-sample validation
-    step_months: 3                  # Retrain every quarter
-
-risk_metacontroller:
-  prior_belief: 0.62                # Conservative starting confidence
-  min_belief_threshold: 0.75        # Scale down if P(Valid|Result) drops below 75%
-  alpha_decay_halflife_days: 30
-  hard_kill_drawdown_pct: 0.05      # 5% Max Drawdown -> Liquidate to Cash
-
-execution_muscle:
-  mode: "paper"                     # paper | live
-  allocation_limit: 100000
-  max_position_size: 0.1            # 10% max allocation per ticker
-  oms:
-    provider: "alpaca"
-    base_url: "https://paper-api.alpaca.markets"
-    websocket_enabled: true         # Listen for partial fills
-  mpc_solver:                       # Constraints for the C++ Execution logic
-    horizon: 5
-    target_turnover: 0.15
-    impact_penalty: 0.01
-    variance_penalty: 0.05
-    max_slippage_bps: 5.0           # Trigger "RL Agent Retune" warning if exceeded
-
-ui_cockpit:
-  update_interval_ms: 2000          # Increased for 20-ticker stability
-  stream_start_offset_days: 120
+    weight_decay: 0.0002
+    dropout: 0.5

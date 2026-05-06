@@ -8,7 +8,6 @@ from datetime import datetime, timedelta
 from qts_core.logger import logger
 from research_lab.alpha_universe import AlphaUniverse, MultiModalBatch
 from research_lab.alpha_ranker import RankNet, MultiModalRankNet, InputSpec
-from research_lab.plugins.core_plugins import SequentialPlugin, SpatialPlugin, GraphPlugin
 from research_lab.real_data_ingestor import InstitutionalIngestor
 from research_lab.data_engine import DataEngine
 from scipy.stats import spearmanr
@@ -25,11 +24,13 @@ class BacktestOrchestrator:
             if count == 0: logger.error(f"❌ DATABASE IS EMPTY ({db_path}). Please run with --ingest first.")
             else: logger.info(f"✅ Pre-flight Check: Found {count} records in DuckDB.")
         except Exception as e: logger.warning(f"⚠️ Pre-flight database check failed: {e}.")
-        d_param = self.config['signal_physics']['fractional_differentiation']['d_param']
+        
+        # Pull Signal Physics parameters for manual model setup
         scales = np.array(self.config['signal_physics']['wavelet_transform']['scales'])
         self.lookback, self.horizon = self.config['signal_physics']['lookback_days'], self.config['signal_physics']['horizon_days']
-        self.plugins = [SequentialPlugin(d_param=d_param), SpatialPlugin(scales=scales), GraphPlugin(feature_dim=8)]
-        self.universe = AlphaUniverse(data_provider=self.engine, plugins=self.plugins, config=self.config)
+        
+        # Senior Fix: Use Registry for true auto-discovery including new 'x_volume'
+        self.universe = AlphaUniverse(data_provider=self.engine, config=self.config)
         self.n_scales = len(scales)
 
     def run_ingestion(self):
@@ -41,12 +42,18 @@ class BacktestOrchestrator:
         logger.info(f"📥 Collecting multi-regime training data ({start.date()} -> {end.date()})...")
         steps = self.universe.walk_forward(universe=self.tickers, start_date=start, end_date=end, stride=1, lookback=self.lookback, horizon=self.horizon, latest_only=True)
         if not steps: logger.error("❌ NO TRAINING SAMPLES PRODUCED."); raise ValueError("Empty dataset.")
-        all_x_seq, all_x_spatial, all_x_graph, all_y, all_times = [], [], [], [], []
+        
+        # Dynamically cat all modality buffers found in the first batch
+        modalities = list(steps[0]['batch'].data.keys())
+        all_data, all_y, all_times = {m: [] for m in modalities}, [], []
+        
         for step in steps:
             batch = step['batch']
-            all_x_seq.append(batch.data['x_seq']); all_x_spatial.append(batch.data['x_spatial']); all_x_graph.append(batch.data['x_graph']); all_y.append(batch.labels); all_times.extend(batch.times)
+            for m in modalities: all_data[m].append(batch.data[m])
+            all_y.append(batch.labels); all_times.extend(batch.times)
+            
         return MultiModalBatch(
-            data={'x_seq': torch.cat(all_x_seq), 'x_spatial': torch.cat(all_x_spatial), 'x_graph': torch.cat(all_x_graph)},
+            data={m: torch.cat(all_data[m]) for m in modalities},
             labels=torch.cat(all_y), tickers=['COMBINED'] * len(torch.cat(all_y)), times=all_times
         )
 
@@ -59,11 +66,18 @@ class BacktestOrchestrator:
         wd = self.config['model_pipeline']['training'].get('weight_decay', 0.0002)
         do = self.config['model_pipeline']['training'].get('dropout', 0.5)
         
+        # Build dynamic InputSpecs based on auto-discovered plugins
+        specs = []
+        for p in self.universe.plugins:
+            if p.name == 'x_seq': specs.append(InputSpec(name='x_seq', shape=(self.lookback, 1), type='seq'))
+            elif p.name == 'x_spatial': specs.append(InputSpec(name='x_spatial', shape=(1, self.n_scales, self.lookback), type='spatial'))
+            elif p.name == 'x_graph': specs.append(InputSpec(name='x_graph', shape=(8,), type='graph'))
+            elif p.name == 'x_volume': specs.append(InputSpec(name='x_volume', shape=(self.lookback, 1), type='seq'))
+
         champion = RankNet(input_dim=self.n_scales, hidden_dim=hidden_dim)
-        specs = [InputSpec(name='x_seq', shape=(self.lookback, 1), type='seq'), InputSpec(name='x_spatial', shape=(1, self.n_scales, self.lookback), type='spatial'), InputSpec(name='x_graph', shape=(8,), type='graph')]
         challenger = MultiModalRankNet(specs=specs, hidden_dim=hidden_dim, vit_heads=vh, gnn_layers=gl, dropout=do)
         
-        using_subset = len(self.tickers) < len(self.config['universe']['tickers'])
+        using_subset = len(self.tickers) < 50 # Heuristic for subset
         from datetime import datetime as dt_class
         torch.serialization.add_safe_globals([MultiModalBatch, dt_class, pd.Timestamp, pd._libs.tslibs.timestamps._unpickle_timestamp])
 
@@ -72,17 +86,17 @@ class BacktestOrchestrator:
             if os.path.exists(cache_path) and not using_subset:
                 logger.info(f"📦 LOADING CACHED TRAINING FEATURES: {cache_path}")
                 train_dataset = torch.load(cache_path, weights_only=True)
-                if len(train_dataset.labels) > 50000: train_dataset = self._collect_training_data(train_start, train_end); torch.save(train_dataset, cache_path)
+                # Invalidate cache if modalities or scale count mismatch
+                if len(train_dataset.data) != len(specs) or train_dataset.data['x_spatial'].shape[2] != self.n_scales:
+                     logger.warning("⚠️ Cache mismatch. RE-COLLECTING...")
+                     train_dataset = self._collect_training_data(train_start, train_end); torch.save(train_dataset, cache_path)
             else: 
                 train_dataset = self._collect_training_data(train_start, train_end)
                 if not using_subset: torch.save(train_dataset, cache_path)
             
-            # SENIOR FIX: TEMPORAL SPLIT (Predict the future, don't just random sample)
-            # Use data before 2022-06-01 for training, and after for validation.
             cutoff_date = datetime(2022, 6, 1)
             train_mask = [t < cutoff_date for t in train_dataset.times]
             val_mask = [t >= cutoff_date for t in train_dataset.times]
-            
             val_dataset = MultiModalBatch(data={k: v[val_mask] for k, v in train_dataset.data.items()}, labels=train_dataset.labels[val_mask], tickers=['VAL'] * sum(val_mask), times=[t for i, t in enumerate(train_dataset.times) if val_mask[i]])
             train_dataset = MultiModalBatch(data={k: v[train_mask] for k, v in train_dataset.data.items()}, labels=train_dataset.labels[train_mask], tickers=['TRAIN'] * sum(train_mask), times=[t for i, t in enumerate(train_dataset.times) if train_mask[i]])
             
@@ -103,8 +117,13 @@ class BacktestOrchestrator:
 
         logger.info(f"🧪 Evaluating on OOS regime ({test_start.date()} -> {test_end.date()})...")
         oos_cache_path = "data/oos_steps.pt"
-        if os.path.exists(oos_cache_path) and not using_subset: steps = torch.load(oos_cache_path, weights_only=True)
-        else: steps = self.universe.walk_forward(universe=self.tickers, start_date=test_start, end_date=test_end, stride=21, lookback=self.lookback, horizon=5, latest_only=True); torch.save(steps, oos_cache_path)
+        if os.path.exists(oos_cache_path) and not using_subset: 
+            steps = torch.load(oos_cache_path, weights_only=True)
+            if len(steps[0]['batch'].data) != len(specs):
+                logger.warning("⚠️ OOS Cache mismatch (modalities). RE-COLLECTING...")
+                steps = self.universe.walk_forward(universe=self.tickers, start_date=test_start, end_date=test_end, stride=21, lookback=self.lookback, horizon=5, latest_only=True); torch.save(steps, oos_cache_path)
+        else: 
+            steps = self.universe.walk_forward(universe=self.tickers, start_date=test_start, end_date=test_end, stride=21, lookback=self.lookback, horizon=5, latest_only=True); torch.save(steps, oos_cache_path)
             
         res = []
         for step in steps:
