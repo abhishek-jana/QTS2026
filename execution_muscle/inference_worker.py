@@ -112,7 +112,9 @@ class InferenceWorker:
             logger.error(f"InferenceWorker: Price poll error: {e}")
 
     def _update_metacognition_feedback(self):
-        """Learns from realized returns."""
+        """Learns from realized returns. Suspended if market is CLOSED."""
+        if not self.market_open: return
+
         realized_returns = {}
         for ticker in self.tickers:
             try:
@@ -121,7 +123,8 @@ class InferenceWorker:
                 if not p0_view.empty and not p1_view.empty:
                     p0 = p0_view['close'].iloc[-1]
                     p1 = p1_view['close'].iloc[-1]
-                    ret = float((p1 / p0) - 1.0) + np.random.normal(0, 0.0001)
+                    # REMOVED JITTER: Use pure realized returns for scientific accuracy
+                    ret = float((p1 / p0) - 1.0)
                     realized_returns[ticker] = ret
             except Exception: pass
         
