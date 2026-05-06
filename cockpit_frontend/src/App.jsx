@@ -383,6 +383,20 @@ export default function MissionControl() {
                 </ResponsiveContainer>
                </div>
                <div className="h-56 mt-4 border-t border-slate-800 pt-4"><div className="text-sm text-slate-600 mb-2 uppercase font-black tracking-widest">Cumulative Info Gain</div><ResponsiveContainer width="100%" height="100%"><LineChart data={(meta.alpha_decay || []).map((val, i) => ({ i, val }))} margin={{ bottom: 30, left: 10, right: 10 }}><XAxis dataKey="i" stroke="#475569" fontSize={8}><Label value="Realized Events" offset={-15} position="insideBottom" fill="#475569" fontSize={9} fontStyle="italic" /></XAxis><YAxis stroke="#475569" fontSize={8}><Label value="Cumulative Gain" angle={-90} position="insideLeft" fill="#475569" fontSize={9} fontStyle="italic" offset={0} /></YAxis><Tooltip contentStyle={{backgroundColor: '#0f172a', border: '1px solid #1e293b', fontSize: '9px'}} itemStyle={{color: '#10b981'}} /><Line type="monotone" dataKey="val" stroke="#10b981" dot={{ r: 2, fill: '#10b981' }} activeDot={{ r: 5 }} strokeWidth={4} /></LineChart></ResponsiveContainer></div>
+               
+               {/* L/S Equity Spread Moved Here */}
+               <div className="h-56 mt-4 border-t border-slate-800 pt-4">
+                    <div className="text-sm text-slate-600 uppercase font-black mb-2 tracking-widest">L/S Equity Spread (Cumulative)</div>
+                    <ResponsiveContainer width="100%" height="100%">
+                        <LineChart data={(globalData.rankings?.ls_spread || []).map((val, i) => ({ i, val }))} margin={{ bottom: 30, left: 10, right: 10 }}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
+                            <XAxis hide />
+                            <YAxis stroke="#475569" fontSize={8} domain={['auto', 'auto']} />
+                            <Tooltip contentStyle={{backgroundColor: '#0f172a', border: '1px solid #1e293b', fontSize: '9px'}} itemStyle={{color: '#10b981'}} labelStyle={{display: 'none'}} />
+                            <Line type="monotone" dataKey="val" stroke="#10b981" dot={false} strokeWidth={4} />
+                        </LineChart>
+                    </ResponsiveContainer>
+                </div>
             </div>
           </Panel>
 
@@ -401,20 +415,6 @@ export default function MissionControl() {
                         </div>
                      </button>
                   ))}
-                </div>
-                
-                {/* L/S Equity Spread Corrected and Visible */}
-                <div className="mt-4 pt-4 border-t border-slate-800 h-40">
-                    <div className="text-base text-slate-600 uppercase font-black mb-2 tracking-widest">L/S Equity Spread (Cumulative)</div>
-                    <ResponsiveContainer width="100%" height="100%">
-                        <LineChart data={(globalData.rankings?.ls_spread || []).map((val, i) => ({ i, val }))}>
-                            <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
-                            <XAxis hide />
-                            <YAxis stroke="#475569" fontSize={8} domain={['auto', 'auto']} />
-                            <Tooltip contentStyle={{backgroundColor: '#0f172a', border: '1px solid #1e293b', fontSize: '9px'}} itemStyle={{color: '#10b981'}} labelStyle={{display: 'none'}} />
-                            <Line type="monotone" dataKey="val" stroke="#10b981" dot={false} strokeWidth={2} />
-                        </LineChart>
-                    </ResponsiveContainer>
                 </div>
              </div>
           </Panel>
