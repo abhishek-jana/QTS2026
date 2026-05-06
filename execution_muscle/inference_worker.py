@@ -224,7 +224,7 @@ class InferenceWorker:
             house_view = self.strategy.get_current_rankings(as_of=self.current_knowledge_time, include_batch=True)
             if house_view['status'] == "OK":
                 batch = house_view['_batch']
-                belief = float(house_view['belief_score']) + np.random.normal(0, 0.005)
+                belief = float(house_view['belief_score'])
                 belief = max(0.05, min(0.95, belief))
                 
                 if self.trading_mode == 'sim':
