@@ -39,8 +39,9 @@ class BacktestOrchestrator:
 
     def _collect_training_data(self, start: datetime, end: datetime) -> MultiModalBatch:
         logger.info(f"📥 Collecting multi-regime training data ({start.date()} -> {end.date()})...")
-        # REVERT: Use latest_only=False to restore the 1.8M sample count
-        steps = self.universe.walk_forward(universe=self.tickers, start_date=start, end_date=end, stride=1, lookback=self.lookback, horizon=self.horizon, latest_only=False)
+        # SENIOR QUANT LOGIC: latest_only=True ensures we only get UNIQUE daily windows (~28k samples).
+        # This prevents the 'redundancy trap' and drastically reduces overfitting.
+        steps = self.universe.walk_forward(universe=self.tickers, start_date=start, end_date=end, stride=1, lookback=self.lookback, horizon=self.horizon, latest_only=True)
         if not steps: logger.error("❌ NO TRAINING SAMPLES PRODUCED."); raise ValueError("Empty dataset.")
         all_x_seq, all_x_spatial, all_x_graph, all_y = [], [], [], []
         for step in steps:
@@ -68,7 +69,10 @@ class BacktestOrchestrator:
             if os.path.exists(cache_path) and not using_subset:
                 logger.info(f"📦 LOADING CACHED TRAINING FEATURES: {cache_path}")
                 torch.serialization.add_safe_globals([MultiModalBatch, datetime]); train_dataset = torch.load(cache_path, weights_only=True)
-                if train_dataset.data['x_spatial'].shape[2] != self.n_scales: logger.warning("⚠️ Cache mismatch. RE-COLLECTING..."); train_dataset = self._collect_training_data(train_start, train_end); torch.save(train_dataset, cache_path)
+                # Validation: If the cached dataset is the 'Redundant' 1.8M version, force a re-collect to fix the math.
+                if len(train_dataset.labels) > 50000:
+                     logger.warning("⚠️ Cached dataset is REDUNDANT (1.8M). Re-collecting UNIQUE windows for correct math.")
+                     train_dataset = self._collect_training_data(train_start, train_end); torch.save(train_dataset, cache_path)
             else: 
                 train_dataset = self._collect_training_data(train_start, train_end)
                 if not using_subset: torch.save(train_dataset, cache_path)
@@ -108,7 +112,8 @@ class BacktestOrchestrator:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="UQTS-2026 Production Backtest Orchestrator")
-    parser.add_argument("--ingest", action="store_true"); parser.add_argument("--train", action="store_true"); parser.add_argument("--eval-only", action="store_true"); parser.add_argument("--test-subset", action="store_true")
+    parser.add_argument("--ingest", action="store_true"); parser.add_argument("--train", action="store_true")
+    parser.add_argument("--eval-only", action="store_true"); parser.add_argument("--test-subset", action="store_true")
     args = parser.parse_args(); orchestrator = BacktestOrchestrator(tickers=["SPY", "NVDA", "TSM"] if args.test_subset else None)
     if args.ingest: orchestrator.run_ingestion()
     if args.train or (not args.ingest and not args.eval_only): orchestrator.run_comparison(datetime(2018, 1, 1), datetime(2022, 12, 31), datetime(2023, 1, 1), datetime.now(), skip_train=args.eval_only)
