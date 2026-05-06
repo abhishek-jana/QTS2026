@@ -71,6 +71,7 @@ class InferenceWorker:
         self.live_prices = {t: 0.0 for t in self.tickers}
         self.previous_rankings = None
         self.previous_knowledge_time = None
+        self.starting_capital = 1000000.0
         
         self.oms_queue = {"filled": 193, "working": 0, "rejected": 0}
         self.order_log = []
@@ -222,6 +223,8 @@ class InferenceWorker:
                                  "slippage_heatmap": np.random.rand(5,5).tolist()},
                     "pipeline": {"champion_sharpe": 1.42, "challenger_sharpe": 2.36, "training_progress": "V1 ACTIVE"},
                     "institutional": {
+                        "capital": float(self.starting_capital * (1.0 + self.ls_equity_curve[-1])),
+                        "pnl": float(self.starting_capital * self.ls_equity_curve[-1]),
                         "gross_exposure": float(len(ladder) * 2.1), 
                         "net_exposure": float(sum(s['exposure'] for s in sector_stats.values())),
                         "sector_exposure": sector_stats,
