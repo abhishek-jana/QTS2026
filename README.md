@@ -67,11 +67,16 @@ uv run python -m research_lab.verify_physics
 
 ### **Phase 3: Backtest & Training**
 Use the unified entry point for all research tasks.
-```bash
-# Run everything (Ingest + Train + Backtest)
-uv run python run.py lab
 
-# Run only training on existing data (2018-2022)
+**For First-Time Runners / Google Colab:**
+Download historical data and start training in one pass.
+```bash
+uv run python run.py lab --ingest --train
+```
+
+**For Regular Runs (Incremental):**
+```bash
+# Run training on existing data (2018-2022)
 uv run python run.py lab --train
 
 # Run a quick smoke test on 3 tickers (SPY, NVDA, TSM)
@@ -90,12 +95,23 @@ Launch the inference worker and mission control.
    uv run python run.py ui
    ```
 
-## 5. Maintenance & Operations
+## 5. Google Colab Quickstart
+If you are running in a notebook, use these cells for a friction-less setup:
+```python
+# Cell 1: Install UV
+!pip install uv
+
+# Cell 2: Sync and Ingest
+!uv sync
+!uv run python run.py lab --ingest --train
+```
+
+## 6. Maintenance & Operations
 - **Observability**: System logs are stored in `logs/system.log` with automatic rotation.
 - **Optimization Log**: Refer to **`docs/RESEARCH_OPTIMIZATION_LOG.md`** for performance baselines and the hardware roadmap.
 - **Tests**: Run the full regression suite: `uv run pytest`.
 
-## 6. Directory Structure
+## 7. Directory Structure
 - `/research_lab`: Alpha orchestrator, core math, and discovery notebooks.
 - `/alpha_factory`: Retraining pipelines and Bayesian meta-controller.
 - `/execution_muscle`: Inference worker and C++ execution headers.
