@@ -1,44 +1,59 @@
-# UQTS-2026: Mission Control UI (V2 Institutional)
+# UQTS-2026: Mission Control UI - Operator's Guide (V2.5)
 
 ## 1. Objective
-A production-grade, high-density institutional cockpit for the UQTS-2026 quantitative platform. This interface provides real-time transparency into quad-modality neural signals, Bayesian risk scaling, and automated execution.
+The UQTS-2026 Mission Control is a high-density institutional cockpit designed for real-time monitoring of quad-modality neural alpha signals. It prioritizes "Physics over Finance," providing transparency into the spectral decomposition and metacognitive state of the strategy.
 
-## 2. Technical Stack
-- **Backend**: FastAPI (Python) + Redis Pub/Sub multiplexing.
-- **Frontend**: React (Vite) + Tailwind CSS + Lightweight Charts + Recharts.
-- **Protocol**: Low-latency WebSockets for 100-ticker bundle streaming.
+## 2. Core Functional Sections
 
-## 3. Core Functional Sections
-### 1. Spectral Alpha (Physicist's View)
-- **Price Chart**: High-resolution OHLCV candles synchronized to Point-in-Time Knowledge time.
-- **Wavelet Spectrogram**: Real-time Morlet CWT heatmap visualization showing multi-resolution energy states.
-- **Statistical Integrity**: Live ADF (Augmented Dickey-Fuller) p-values for stationarity verification.
-- **SHAP Fusion**: Neural modality weights mapped to human-readable factors (Momentum, Volatility, Sentiment, Liquidity).
+### 2.1 Spectral Alpha Telemetry (The Physicist's View)
+*   **Price Chart**: High-resolution OHLCV candles synchronized to Point-in-Time Knowledge time. This is the "Ground Truth" for alpha signals.
+*   **Wavelet Spectrogram**: Real-time Morlet Continuous Wavelet Transform (CWT) heatmap. 
+    *   **Y-Axis**: Frequency scale (Log-spaced).
+    *   **X-Axis**: Time (Rolling window).
+    *   **Brightness/Color**: Energy density. High energy at lower scales (high frequency) often precedes volatility breakouts or regime shifts.
+*   **Statistical Integrity (ADF)**: Live Augmented Dickey-Fuller p-values. Values **MUST be < 0.05** for stationarity verification. Signals with high p-values are considered "drifting" and carry high risk.
 
-### 2. Metacognition (Risk Health)
-- **Bayesian Belief Gauge**: Confidence metric $P(Valid | Result)$ derived from realized alpha.
-- **Manifold Drift (t-SNE)**: 2D projection of live market regimes vs. training clusters.
-- **Alpha Decay Signal**: Interactive cumulative information gain curve.
+### 2.2 Neural Interpretability (SHAP Fusion)
+*   **Momentum (Temporal)**: Weight assigned to historical price trend and sequence memory.
+*   **Volatility (Spatial)**: Weight assigned to variance structures and local energy pulses.
+*   **Sentiment (Graph)**: Weight assigned to cross-sectional ticker relationships and sector rotation signals.
+*   **Liquidity (Volume)**: Weight assigned to volume-price divergence and flow toxicity.
 
-### 3. Ranking Ladder & Sector Matrix
-- **Decile Ladder**: Cross-sectional sorted rankings (Long/Short) with live price sync.
-- **Sector Intelligence (Interactive)**:
-    - Advanced aggregation: Exposure %, Ticker count, and Conviction (α) per sector.
-    - **Drill-down**: Clicking a sector filters the main Ranking Ladder instantly.
-    - **Focus**: Clicking a ticker hydrates the Spectral Alpha panel with high-res telemetry.
+### 2.3 Metacognition & Risk (Metasurface)
+*   **Bayesian Belief Gauge**: A real-time confidence score $P(Valid | Data)$ derived from realized alpha vs. predicted distribution.
+    *   **> 80%**: High conviction; standard sizing.
+    *   **60% - 80%**: Neutral; caution advised.
+    *   **< 60%**: **Automated position scaling triggered.**
+*   **Manifold Drift (t-SNE)**: 2D projection of the live market manifold.
+    *   **Base Dots (Circles)**: Training set centroids.
+    *   **Live Dots (Crosses)**: Current market state.
+    *   **Interpretation**: Large distances indicate the model is encountering OOS (Out-Of-Sample) regimes.
 
-### 4. Execution Muscle (Reality Check)
-- **Implementation Shortfall (IS)**: Real-time efficiency tracking in BPS.
-- **OMS Queue**: Status of filled vs. working orders in the C++26 execution pipe.
-- **Slippage Heatmap**: Stretched visualization of liquidity distribution and fill impact.
-- **Latency Monitor**: μs-level telemetry from the Direct OSQP Context.
+### 2.4 Execution & Reality Check
+*   **Implementation Shortfall (IS)**: Real-time efficiency tracking in Basis Points (BPS). Measures the distance between arrival price and fill price. High IS (> 5bps) indicates toxic flow.
+*   **OMS Queue**: Live status of the Order Management System.
+    *   **FILLED**: Order executed and committed to the ledger.
+    *   **WORKING**: Active order in the market (Iceberg/TWAP).
+    *   **REJECTED**: Order blocked by risk-limit breaches (e.g., Notional/Concentration).
 
-### 5. Research Pipeline Control
-- **Champion vs Challenger**: A/B backtest telemetry showing Sharpe Ratio delta.
-- **System Status**: Live terminal for training progress and WFO status.
+## 3. Standard Operating Procedure (SOP)
 
-## 4. Operational Instructions
-- **Filter**: Use the Sector Matrix blocks to isolate industrial alpha regimes.
-- **Analyze**: Click tickers to verify the signal physics via Wavelet and SHAP fusion.
-- **Scale**: Monitor Bayesian Belief; values < 60% indicate automated position scaling.
-- **Kill Switch**: Liquidation protocol active via the global header button.
+### Phase 1: Industrial Screening
+1.  Scan the **Sector Matrix** for clusters with positive cumulative exposure and high ticker counts.
+2.  Identify "Industrial Hotspots" where conviction (α) is concentrated.
+
+### Phase 2: Signal Verification
+1.  Click a ticker in the **Ranking Ladder** to hydrate the Spectral panel.
+2.  Verify the **Wavelet Physics**: Does the signal show stable energy at the target horizon?
+3.  Check **Neural SHAP**: Does the model's rationale (e.g., Momentum-heavy) match the visual chart structure?
+
+### Phase 3: Risk Assessment
+1.  Monitor the **Metacognition** belief score. Ensure it remains above the 60% liquidation threshold.
+2.  Review the **Manifold Drift**. If crosses are drifting far from circles, tighten stop-losses.
+
+### Phase 4: Execution Audit
+1.  Verify the **OMS Queue**. Check for any REJECTED orders that might indicate system bottlenecks.
+2.  Audit **Slippage Heatmaps** to ensure fills are occurring within expected liquidity pockets.
+
+## 4. Emergency Protocol
+*   **INTERFACE OVERRIDE (Header Button)**: Immediately terminates all active WebSocket streams and triggers the server-side liquidation logic. Use ONLY in cases of extreme manifold drift or execution instability.

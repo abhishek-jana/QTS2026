@@ -201,26 +201,81 @@ const Panel = ({ title, icon: Icon, children, className = "" }) => (
 const MissionManual = ({ isOpen, onClose }) => {
   if (!isOpen) return null;
   const sections = [
-    { title: "1. Spectral & Signal Viewer", items: [{ label: "Price Chart", detail: "Raw market fluid." }, { label: "Wavelet Spectrogram", detail: "Y-axis = Frequency. ENERGY = Brightness." }] },
-    { title: "2. Statistical Integrity", items: [{ label: "ADF p-value", detail: "Numerical stability. MUST be < 0.05." }] },
-    { title: "3. Feature Importance (SHAP)", items: [{ label: "SHAP Fusion", detail: "Bridges Modalities to Factors." }] },
-    { title: "4. Execution Muscle", items: [{ label: "IS (BPS)", detail: "Execution efficiency." }, { label: "OMS Queue", detail: "Live execution status." }] },
-    { title: "5. Metacognition", items: [{ label: "Bayesian Belief", detail: "Model confidence score." }, { label: "Manifold Drift", detail: "t-SNE distance." }] },
-    { title: "6. Sector Intelligence", items: [{ label: "Advanced Features", detail: "Filter ladder by sector." }] }
+    { 
+      title: "1. Spectral & Signal Viewer (Telemetry)", 
+      items: [
+        { label: "Price Chart", detail: "High-resolution OHLCV candles synchronized to Point-in-Time Knowledge time. Represents the 'Ground Truth' for alpha signals." },
+        { label: "Wavelet Spectrogram", detail: "Continuous Wavelet Transform (CWT) using Morlet kernels. Y-axis represents frequency (scale), and brightness indicates energy density at that resolution. High energy at lower scales often precedes volatility breakouts." }
+      ] 
+    },
+    { 
+      title: "2. Neural Interpretability", 
+      items: [
+        { label: "Neural SHAP Fusion", detail: "Bridges latent modalities (Spatial, Temporal, Graph) to human-readable factors. High Momentum weighting suggests trend-following dominance, while high Volatility weighting indicates regime-shift detection." },
+        { label: "ADF p-value", detail: "Augmented Dickey-Fuller test for stationarity. Signals with p > 0.05 are considered non-stationary and carry high 'drift' risk. Ideally, values should be < 0.01." }
+      ] 
+    },
+    { 
+      title: "3. Metacognition & Risk Control", 
+      items: [
+        { label: "Bayesian Belief", detail: "A real-time confidence score P(Valid | Data). Values < 60% trigger automated position downsizing. Above 80% indicates high regime alignment." },
+        { label: "Manifold Drift", detail: "t-SNE projection of the live market manifold vs. training centroids. If 'Live' dots (crosses) deviate significantly from 'Base' dots (circles), the model is encountering OOS (Out-Of-Sample) micro-regimes." }
+      ] 
+    },
+    { 
+      title: "4. Execution Muscle", 
+      items: [
+        { label: "IS (BPS)", detail: "Implementation Shortfall in Basis Points. Measures the distance between arrival price and fill price. High IS (> 5bps) indicates toxic flow or poor liquidity management." },
+        { label: "OMS Queue", detail: "Live status of the C++26 Order Management System. FILLED orders are committed to ledger; WORKING orders are active in the market; REJECTED orders indicate risk-limit breaches." }
+      ] 
+    },
+    { 
+      title: "5. Operational Protocol", 
+      items: [
+        { label: "Step 1: Filter", detail: "Use the Sector Matrix to identify industrial clusters with high cumulative conviction (α)." },
+        { label: "Step 2: Hydrate", detail: "Click a ticker in the Ranking Ladder to hydrate the Spectral Telemetry. Verify that Energy Pulses align with the SHAP Momentum factors." },
+        { label: "Step 3: Monitor", detail: "Watch the L/S Equity Spread. A narrowing spread suggests alpha decay; check the Metacognition panel for drift alerts." }
+      ] 
+    }
   ];
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/90 backdrop-blur-sm p-4 font-mono">
-      <div className="bg-slate-900 border border-emerald-500/50 w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col shadow-2xl">
-        <div className="p-4 border-b border-slate-800 flex justify-between items-center bg-emerald-500/5"><div className="flex items-center gap-2 text-emerald-400 font-bold uppercase"><Terminal className="w-4 h-4" /> UQTS-2026 MANUAL</div><button onClick={onClose} className="text-slate-500 hover:text-white transition-colors bg-slate-800/50 p-1 rounded-full"><X className="w-4 h-4" /></button></div>
-        <div className="p-8 space-y-8 overflow-y-auto no-scrollbar">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/95 backdrop-blur-md p-4 font-mono">
+      <div className="bg-slate-900 border border-emerald-500/50 w-full max-w-5xl max-h-[90vh] overflow-hidden flex flex-col shadow-2xl">
+        <div className="p-4 border-b border-slate-800 flex justify-between items-center bg-emerald-500/10">
+          <div className="flex items-center gap-3 text-emerald-400 font-bold uppercase tracking-widest text-sm">
+            <Terminal className="w-5 h-5" /> 
+            UQTS-2026: OPERATIONAL COMMAND MANUAL (V2.5)
+          </div>
+          <button onClick={onClose} className="text-slate-500 hover:text-white transition-colors bg-slate-800/50 p-1.5 rounded-full hover:bg-emerald-500/20">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+        <div className="p-8 space-y-10 overflow-y-auto no-scrollbar bg-gradient-to-b from-slate-900 to-black">
           {sections.map((s, i) => (
             <div key={i} className="space-y-4">
-              <h3 className="text-emerald-500 font-bold uppercase text-[10px] tracking-widest border-b border-emerald-900/30 pb-2">{s.title}</h3>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">{s.items.map((it, j) => (<div key={j} className="bg-black/40 p-4 border border-slate-800/50 group hover:border-emerald-500/30 transition-all"><h4 className="text-slate-100 font-bold text-[9px] uppercase mb-1 flex items-center gap-2"><div className="w-1 h-2 bg-emerald-500" />{it.label}</h4><p className="text-slate-500 text-[10px] italic">{it.detail}</p></div>))}</div>
+              <h3 className="text-emerald-500 font-black uppercase text-xs tracking-[0.3em] border-b border-emerald-900/40 pb-2 flex items-center gap-2">
+                <span className="opacity-50">0{i+1}</span> {s.title}
+              </h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {s.items.map((it, j) => (
+                  <div key={j} className="bg-slate-800/20 p-5 border border-slate-700/50 group hover:border-emerald-500/40 transition-all hover:bg-slate-800/40 shadow-inner">
+                    <h4 className="text-slate-100 font-bold text-[10px] uppercase mb-2 flex items-center gap-2">
+                      <div className="w-1.5 h-3 bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]" />
+                      {it.label}
+                    </h4>
+                    <p className="text-slate-400 text-[11px] leading-relaxed font-medium">{it.detail}</p>
+                  </div>
+                ))}
+              </div>
             </div>
           ))}
         </div>
-        <div className="p-4 bg-black/40 border-t border-slate-800 flex justify-center"><button onClick={onClose} className="bg-emerald-600 text-black px-12 py-3 font-black uppercase text-[10px] hover:bg-emerald-400 shadow-lg active:scale-95">ACKNOWLEDGE</button></div>
+        <div className="p-6 bg-slate-900 border-t border-slate-800 flex justify-between items-center">
+          <div className="text-[9px] text-slate-600 uppercase font-black tracking-widest animate-pulse italic">System Status: Neural_Active // Kernel: Stable</div>
+          <button onClick={onClose} className="bg-emerald-600 text-black px-16 py-3 font-black uppercase text-xs hover:bg-emerald-400 shadow-[0_0_20px_rgba(16,185,129,0.3)] transition-all active:scale-95">
+            I ACKNOWLEDGE & ACCEPT COMMAND
+          </button>
+        </div>
       </div>
     </div>
   );
