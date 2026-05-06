@@ -5,6 +5,7 @@ import os
 import numpy as np
 from datetime import datetime
 import alpaca_trade_api as tradeapi
+from alpaca_trade_api.stream import Stream
 from qts_core.logger import logger
 import redis
 
@@ -13,9 +14,9 @@ class AsyncPaperBot:
     Event-driven Execution Engine for Alpaca.
     Handles order submission, fill reconciliation, and live state tracking.
     """
-    def __init__(self, config, starting_capital=1000000.0):
+    def __init__(self, config, starting_capital=None):
         self.config = config
-        self.starting_capital = starting_capital
+        self.starting_capital = starting_capital # If None, we will hydrate from account
         self.api_key = os.getenv("ALPACA_API_KEY")
         self.api_secret = os.getenv("ALPACA_SECRET_KEY")
         self.base_url = self.config['execution_muscle']['oms']['base_url']
@@ -93,21 +94,30 @@ class AsyncPaperBot:
         logger.info("Bot: Synchronizing state with Alpaca...")
         try:
             acct = self.rest_api.get_account()
+            portfolio_value = float(acct.portfolio_value)
+            
+            # HYDRATION LOGIC: If this is first run, assume current value is baseline
+            if self.starting_capital is None or self.starting_capital == 1000000.0:
+                self.starting_capital = portfolio_value
+                logger.info(f"Bot: Initialized starting capital to ${self.starting_capital:,.2f}")
+
             pos = self.rest_api.list_positions()
             self.positions = {p.symbol: float(p.qty) for p in pos}
             
-            portfolio_value = float(acct.portfolio_value)
             # Total P&L since initialization (starting capital)
             total_pnl = portfolio_value - self.starting_capital
             
-            logger.info(f"Bot: Account Value ${portfolio_value} | Total P&L: ${total_pnl:.2f}")
+            logger.info(f"Bot: Account Value ${portfolio_value:,.2f} | Total P&L: ${total_pnl:,.2f}")
             return portfolio_value, total_pnl
         except Exception as e:
             logger.error(f"State Hydration Failed: {e}")
-            return 1000000.0, 0.0
+            return self.starting_capital or 100000.0, 0.0
 
     async def run_stream(self):
         """Run the WebSocket stream."""
-        stream = tradeapi.stream.Stream(self.api_key, self.api_secret, base_url=self.base_url, data_feed='iex')
-        stream.subscribe_trade_updates(self._on_trade_update)
-        await stream._run_forever()
+        try:
+            stream = Stream(self.api_key, self.api_secret, base_url=self.base_url, data_feed='iex')
+            stream.subscribe_trade_updates(self._on_trade_update)
+            await stream._run_forever()
+        except Exception as e:
+            logger.error(f"Alpaca Stream Error: {e}")
