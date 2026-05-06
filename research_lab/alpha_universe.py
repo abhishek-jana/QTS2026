@@ -29,7 +29,7 @@ class AlphaUniverse:
     def __init__(self, data_provider, plugins: List = None, config: dict = None):
         from research_lab.plugins.core_plugins import ModalityRegistry
         self.data_provider = data_provider
-        self.labeler = None # Lazy load to avoid circular
+        self.labeler = None 
         self.config = config or {}
         
         if plugins is not None:
@@ -52,19 +52,15 @@ class AlphaUniverse:
         
         fetch_limit = as_of + timedelta(days=horizon * 2) if backtest_mode else as_of
         batch_view = self.data_provider.get_batch_pit_view(tickers, fetch_limit)
-        if batch_view.empty:
-            return None
+        if batch_view.empty: return None
 
         processed_views = {}
         for ticker in tickers:
             ticker_data = batch_view[batch_view['ticker'] == ticker]
             if ticker_data.empty: continue
-            
             feat_view = ticker_data[ticker_data.index <= as_of]
             if len(feat_view) < lookback: continue
-            
-            label_view = ticker_data[ticker_data.index <= fetch_limit]
-            processed_views[ticker] = label_view
+            processed_views[ticker] = ticker_data[ticker_data.index <= fetch_limit]
 
         if not processed_views: return None
         combined_view = pd.concat(processed_views.values())
@@ -92,7 +88,6 @@ class AlphaUniverse:
                 if latest_only and t_idx != indices[0]: continue
                 event_time = feat_view.index[t_idx]
                 label_val = ticker_labels.get(event_time, np.nan)
-                
                 if backtest_mode and np.isnan(label_val): continue
 
                 for p_name, tensor in ticker_features.items(): fused_data[p_name].append(tensor[i])
@@ -109,9 +104,13 @@ class AlphaUniverse:
     def walk_forward(self, universe: List[str], start_date: datetime, end_date: datetime, stride: int = 21, **kwargs):
         results = []
         current_date = start_date
+        # FIX: Pop latest_only and backtest_mode from kwargs to avoid double-passing to snapshot()
+        latest_only = kwargs.pop('latest_only', True)
+        backtest_mode = kwargs.pop('backtest_mode', True)
+        
         while current_date <= end_date:
             logger.info(f"Executing Lab Walk-Forward: {current_date.date()}")
-            batch = self.snapshot(as_of=current_date, tickers=universe, latest_only=True, backtest_mode=True, **kwargs)
+            batch = self.snapshot(as_of=current_date, tickers=universe, latest_only=latest_only, backtest_mode=backtest_mode, **kwargs)
             if batch: results.append({'date': current_date, 'batch': batch})
             current_date += timedelta(days=stride)
         return results
