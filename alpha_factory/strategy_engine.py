@@ -92,12 +92,30 @@ class StrategyEngine:
         # Model Inference (RankNet LTR)
         with torch.no_grad():
             if hasattr(self.model, 'predict_dataset'):
+                # This is likely the TorchScript version
                 scores = self.model.predict_dataset(batch).squeeze()
+                # If TorchScript doesn't expose gates easily, we might need a fallback
+                weights = None
             else:
                 device = next(self.model.parameters()).device
                 inputs = {k: v.to(device) for k, v in batch.data.items()}
-                scores = self.model(inputs).squeeze()
-            
+                
+                # Manual forward to extract gates
+                embs = []
+                for spec in self.model.specs:
+                    x = inputs[spec.name]
+                    if spec.type == 'seq': _, (h_n, _) = self.model.encoders[spec.name](x); e = h_n[-1]
+                    else: e = self.model.encoders[spec.name](x)
+                    embs.append(self.model.norms[spec.name](e))
+                
+                flat_embs = torch.cat(embs, dim=1)
+                weights = self.model.gate(flat_embs).cpu().numpy()
+                
+                # Re-construct output using the extracted embs and weights
+                stacked_embs = torch.stack(embs, dim=1)
+                w_tensor = torch.from_numpy(weights).to(device).unsqueeze(-1)
+                scores = self.model.model((stacked_embs * w_tensor).sum(dim=1)).squeeze()
+
             if isinstance(scores, torch.Tensor):
                 scores = scores.cpu().numpy()
             
@@ -111,11 +129,25 @@ class StrategyEngine:
         for i, ticker in enumerate(batch.tickers):
             score_val = float(scores[i]) if len(scores) > i else 0.0
             
+            # Map weights to human names
+            shap = {}
+            if weights is not None:
+                spec_map = {
+                    'x_seq': "Momentum (Temporal)",
+                    'x_spatial': "Volatility (Spatial)",
+                    'x_graph': "Sentiment (Graph)",
+                    'x_volume': "Liquidity (Volume)"
+                }
+                for j, spec in enumerate(self.model.specs):
+                    name = spec_map.get(spec.name, spec.name)
+                    shap[name] = float(weights[i, j])
+            
             ladder.append({
                 "ticker": ticker,
                 "score": score_val,
                 "price": float(batch.data.get('raw_price', torch.zeros(len(batch.tickers)))[i].item()),
-                "energy": float(torch.mean(torch.abs(batch.data['x_spatial'][i])).item())
+                "energy": float(torch.mean(torch.abs(batch.data['x_spatial'][i])).item()),
+                "shap": shap
             })
             
         ladder.sort(key=lambda x: x['score'], reverse=True)
