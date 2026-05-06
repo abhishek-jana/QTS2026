@@ -41,6 +41,11 @@ This document tracks the evolution of the research pipeline, identifying perform
 *   **Universe Expansion:** Moving to 100 tickers provided the GNN with the necessary graph density to learn cross-sectional relationships.
 *   **Temporal Splitting:** Abandoned random 20% validation in favor of a strictly temporal hold-out (Late 2022). This ensures the validation loss is a true proxy for out-of-sample performance.
 
+## 5. V2 Transition: High-Density Alpha
+*   **Status:** V1 Institutional Baseline verified (IC 0.0361).
+*   **Strategy:** Pivot from expanding universe breadth to increasing temporal depth (Hourly bars).
+*   **Roadmap:** Refer to **`docs/V2_INTRADAY_ROADMAP.md`** for detailed objectives regarding intraday micro-regimes and sector-masked GNN architectures.
+
 ---
 **Last Updated:** May 6, 2026
-**Status:** Institutional Phase Engaged - 100 Ticker Baseline Locked.
+**Status:** Institutional Phase Engaged - V1 Baseline Finalized.

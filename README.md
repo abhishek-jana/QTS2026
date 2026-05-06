@@ -106,6 +106,7 @@ Launch the inference worker and mission control.
 - **Temporal Splitting**: Training/Validation split is performed temporally (Hold-out: Late 2022) to prevent forward-looking bias.
 - **Observability**: System logs are stored in `logs/system.log` with sub-epoch progress reporting.
 - **Optimization Log**: Refer to **`docs/RESEARCH_OPTIMIZATION_LOG.md`** for scaling benchmarks.
+- **Future Research**: Refer to **`docs/V2_INTRADAY_ROADMAP.md`** for the high-density alpha roadmap.
 
 ## 7. Directory Structure
 - `/research_lab`: Alpha orchestrator, core math, and discovery notebooks.
