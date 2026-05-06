@@ -93,13 +93,22 @@ class InferenceWorker:
 
     def _poll_realtime_prices(self):
         api_key, api_secret = os.getenv("ALPACA_API_KEY"), os.getenv("ALPACA_SECRET_KEY")
-        if not api_key or not api_secret: return
+        if not api_key or not api_secret: 
+            logger.warning("InferenceWorker: ALPACA_API_KEY/SECRET not found. Live prices disabled.")
+            return
         try:
+            logger.info("InferenceWorker: Polling live prices from Alpaca...")
             url = f"https://data.alpaca.markets/v2/stocks/trades/latest?symbols={','.join(self.tickers[:100])}"
             resp = requests.get(url, headers={"APCA-API-KEY-ID": api_key, "APCA-API-SECRET-KEY": api_secret})
             if resp.status_code == 200:
-                for t, d in resp.json().get('trades', {}).items(): self.live_prices[t] = float(d['p'])
-        except Exception: pass
+                data = resp.json().get('trades', {})
+                for t, d in data.items(): 
+                    self.live_prices[t] = float(d['p'])
+                logger.info(f"InferenceWorker: Received {len(data)} live prices.")
+            else:
+                logger.error(f"InferenceWorker: Price poll failed with status {resp.status_code}: {resp.text}")
+        except Exception as e: 
+            logger.error(f"InferenceWorker: Price poll error: {e}")
 
     def _update_metacognition_feedback(self):
         """Learns from realized returns."""
@@ -180,6 +189,9 @@ class InferenceWorker:
     async def run(self):
         logger.info(f"INFERENCE WORKER: LOOP STARTED ({self.trading_mode})")
         
+        # Immediate price poll
+        self._poll_realtime_prices()
+        
         if self.live_bot:
             # Launch Alpaca Stream in background
             asyncio.create_task(self.live_bot.run_stream())
@@ -191,7 +203,9 @@ class InferenceWorker:
             cmd = self.redis_client.get('uqts:commands')
             if cmd and json.loads(cmd).get('command') == 'KILL_SWITCH': break
             
-            if time.time() - last_poll > 60: self._poll_realtime_prices(); last_poll = time.time()
+            if time.time() - last_poll > 60: 
+                self._poll_realtime_prices()
+                last_poll = time.time()
             
             # Use real time for non-sim modes
             if self.trading_mode != 'sim': self.current_knowledge_time = datetime.now()
@@ -231,7 +245,12 @@ class InferenceWorker:
                 for e in house_view['ladder']:
                     t = e['ticker']
                     s = self.sector_map.get(t, "Other")
-                    ladder.append({**e, "live_price": self.live_prices.get(t, e['price']), "sector": s})
+                    
+                    # PRIORITY: Live API -> Model Historical -> 0.0
+                    live_p = self.live_prices.get(t, 0.0)
+                    display_p = live_p if live_p > 0 else float(e.get('price', 0.0))
+                    
+                    ladder.append({**e, "live_price": display_p, "sector": s})
                     
                     if s not in sector_stats: sector_stats[s] = {"exposure": 0.0, "count": 0, "avg_score": 0.0}
                     sector_stats[s]["exposure"] += e['score'] * 2.1
