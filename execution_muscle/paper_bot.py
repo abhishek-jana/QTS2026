@@ -118,6 +118,15 @@ class AsyncPaperBot:
             logger.error(f"State Hydration Failed: {e}")
             return self.starting_capital or 100000.0, 0.0
 
+    async def check_market_status(self):
+        """Check if the market is currently open."""
+        try:
+            clock = self.rest_api.get_clock()
+            return clock.is_open
+        except Exception as e:
+            logger.error(f"Market Status Check Failed: {e}")
+            return False
+
     async def run_stream(self):
         """Run the legacy WebSocket stream."""
         try:

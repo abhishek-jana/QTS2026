@@ -82,6 +82,7 @@ class InferenceWorker:
 
         # Live Bot Integration
         self.live_bot = None
+        self.market_open = True # Default to open in sim mode
         if self.trading_mode in ['paper', 'live']:
             self.live_bot = AsyncPaperBot(self.config, self.starting_capital)
 
@@ -197,6 +198,7 @@ class InferenceWorker:
             asyncio.create_task(self.live_bot.run_stream())
             capital, drift = await self.live_bot.hydrate_state()
             self.starting_capital = capital # Use real account value
+            self.market_open = await self.live_bot.check_market_status()
 
         last_poll = time.time()
         while not self.is_killed:
@@ -205,6 +207,9 @@ class InferenceWorker:
             
             if time.time() - last_poll > 60: 
                 self._poll_realtime_prices()
+                if self.live_bot: 
+                    self.market_open = await self.live_bot.check_market_status()
+                    logger.info(f"Market Status Update: {'OPEN' if self.market_open else 'CLOSED'}")
                 last_poll = time.time()
             
             # Use real time for non-sim modes
@@ -233,12 +238,15 @@ class InferenceWorker:
                     self.oms_queue = self.live_bot.oms_stats
                     self.order_log = self.live_bot.order_log
                     
-                    # Real Execution if high conviction
-                    if belief > self.config['execution_muscle']['min_belief_threshold']:
+                    # Real Execution if high conviction AND market is open
+                    if self.market_open and belief > self.config['execution_muscle']['min_belief_threshold']:
                         # Execute top decile (simplified for plan execution)
                         top_ticker = house_view['ladder'][0]['ticker']
                         if top_ticker not in self.live_bot.positions:
                             self.live_bot.submit_order(top_ticker, "BUY", 10) # 10 shares as test
+                    elif not self.market_open:
+                        # Log waiting state periodically
+                        if time.time() % 3600 < 5: logger.info("Market is CLOSED. Execution suspended.")
                 
                 ladder = []
                 sector_stats = {}
@@ -277,7 +285,8 @@ class InferenceWorker:
                         "sector_exposure": sector_stats,
                         "data_latency_ms": float(np.random.uniform(40, 180)), 
                         "data_freshness_s": float(time.time() - last_poll),
-                        "oms_queue": self.oms_queue, "order_log": self.order_log
+                        "oms_queue": self.oms_queue, "order_log": self.order_log,
+                        "market_status": "OPEN" if self.market_open else "CLOSED"
                     },
                     "type": "GLOBAL_UPDATE"
                 }

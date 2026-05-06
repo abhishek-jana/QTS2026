@@ -342,6 +342,7 @@ export default function MissionControl() {
             <div className="text-2xl font-black text-emerald-500 tracking-tighter italic">UQTS-2026</div>
             <div className="flex items-center gap-2 border-l border-slate-800 pl-4"><div className={"w-2 h-2 rounded-full " + (status === "active" ? "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.8)]" : "bg-red-500")} /><span className="uppercase text-sm font-bold text-slate-500">{status}</span></div>
             <div className="text-sm text-slate-600 border border-slate-800 px-2 py-0.5 rounded-sm uppercase tracking-tighter">SIM_TIME: {globalData.timestamp}</div>
+            <div className={"text-[10px] px-2 py-0.5 border font-black uppercase tracking-widest " + (inst.market_status === 'OPEN' ? "text-emerald-500 border-emerald-900/50 bg-emerald-950/20" : "text-amber-600 border-amber-900/50 bg-amber-950/20")}>Market {inst.market_status || 'OPEN'}</div>
             <div className="flex gap-6 px-6 border-l border-slate-800">
                <div className="flex flex-col"><span className="text-[10px] text-slate-600 uppercase font-black tracking-widest">Gross Exp</span><span className="text-sm font-bold text-slate-100 italic">{(inst.gross_exposure || 0).toFixed(1)}%</span></div>
                <div className="flex flex-col"><span className="text-[10px] text-slate-600 uppercase font-black tracking-widest">Net Exp</span><span className="text-sm font-bold text-slate-100">{(inst.net_exposure || 0).toFixed(1)}%</span></div>
