@@ -134,7 +134,7 @@ model_pipeline:
     dropout: 0.4
 
 risk_metacontroller:
-  prior_belief: 0.75             # Confirmed Alpha Edge (IC 0.036) justification
+  prior_belief: 0.75
 
 execution_muscle:
   oms:
@@ -143,5 +143,8 @@ execution_muscle:
     horizon: 5
     impact_penalty: 0.01
     variance_penalty: 0.1
-  min_belief_threshold: 0.65     # Don't trade if Bayesian belief drops below this
-  max_position_size: 0.05        # 5% max allocation per ticker
+  min_belief_threshold: 0.65
+  max_position_size: 0.05
+
+ui_cockpit:
+  update_interval_ms: 1000 # Pulse rate for Mission Control

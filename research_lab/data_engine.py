@@ -10,13 +10,15 @@ class IDataProvider(Protocol):
     def get_batch_pit_view(self, tickers: List[str], as_of: datetime) -> pd.DataFrame: ...
 
 class DataEngine:
-    def __init__(self, storage_path: str = "data/uqts_bitemporal.ddb", config_path: str = "config.yaml"):
+    def __init__(self, storage_path: str = "data/uqts_bitemporal.ddb", config_path: str = "config.yaml", read_only: bool = False):
         self.storage_path = storage_path
-        self.conn = duckdb.connect(self.storage_path)
+        # SENIOR FIX: Support read_only mode to allow concurrent access from UI and Worker
+        self.conn = duckdb.connect(self.storage_path, read_only=read_only)
         self.config_path = config_path
-        self.features = ['close'] # Default
+        self.features = ['close']
         self._load_config()
-        self._init_db()
+        if not read_only:
+            self._init_db()
 
     def _load_config(self):
         try:
@@ -50,11 +52,12 @@ class DataEngine:
     def get_batch_pit_view(self, tickers: List[str], as_of: datetime) -> pd.DataFrame:
         if not tickers: return pd.DataFrame()
         ticker_list = "', '".join(tickers)
-        # Dynamically build column list based on requested features
-        base_cols = ['ticker', 'event_time', 'knowledge_time', 'is_correction']
-        # Ensure we always have 'close' for labeling/residuals if not requested as a feature
-        feature_cols = list(set(self.features + ['close']))
-        all_cols = base_cols + [c for c in feature_cols if c not in base_cols]
+        
+        # SENIOR FIX: Always include standard OHLCV columns + any extra requested features
+        # This prevents 'KeyError: open' in visualization layers.
+        standard_cols = ['ticker', 'event_time', 'knowledge_time', 'open', 'high', 'low', 'close', 'volume', 'is_correction']
+        feature_cols = [f for f in self.features if f not in standard_cols]
+        all_cols = standard_cols + feature_cols
         col_str = ", ".join(all_cols)
         
         query = f"""

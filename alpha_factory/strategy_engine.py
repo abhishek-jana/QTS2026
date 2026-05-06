@@ -36,7 +36,6 @@ class StrategyEngine:
         self.ingestor = InstitutionalIngestor(self.data_provider, config=self.config)
         
         # 3. Initialize MetaController for belief scoring
-        # Senior Fix: Use updated prior_belief from config
         self.meta_controller = BayesianMetaController(
             prior_belief=self.config.get('risk_metacontroller', {}).get('prior_belief', 0.75)
         )
@@ -44,7 +43,6 @@ class StrategyEngine:
         # 4. Load the trained "Brain" from configurable path
         model_path = self.config.get('model_pipeline', {}).get('model_path', 'models/challenger_v1.pt')
         try:
-            # Check if file exists first to avoid confusing error messages
             if os.path.exists(model_path):
                 self.model = torch.jit.load(model_path)
                 self.model.eval()
@@ -53,7 +51,6 @@ class StrategyEngine:
                 raise FileNotFoundError(f"Model file {model_path} not found.")
         except Exception as e:
             logger.warning(f"StrategyEngine: TorchScript load failed ({e}). Falling back to Python model.")
-            # Standard Quad-modality spec (Sequential, Spatial, Graph, Volume)
             lookback = self.config['signal_physics'].get('lookback_days', 63)
             n_scales = len(self.config['signal_physics']['wavelet_transform']['scales'])
             specs = [
@@ -70,8 +67,6 @@ class StrategyEngine:
         if not self.ingestor:
              logger.warning("StrategyEngine: Ingestor not configured.")
              return
-             
-        logger.info(f"StrategyEngine: Ingesting {len(tickers)} tickers from {start_date} to {end_date}...")
         self.ingestor.ingest_universe(tickers, start_date, end_date)
 
     def get_current_rankings(self, as_of: datetime, include_batch: bool = False) -> Dict[str, Any]:
@@ -99,7 +94,6 @@ class StrategyEngine:
             if hasattr(self.model, 'predict_dataset'):
                 scores = self.model.predict_dataset(batch).squeeze()
             else:
-                # Direct TorchScript Forward Pass
                 device = next(self.model.parameters()).device
                 inputs = {k: v.to(device) for k, v in batch.data.items()}
                 scores = self.model(inputs).squeeze()
@@ -107,7 +101,6 @@ class StrategyEngine:
             if isinstance(scores, torch.Tensor):
                 scores = scores.cpu().numpy()
             
-            # Ensure scores is at least 1D
             if np.isscalar(scores):
                 scores = np.array([scores])
             elif scores.ndim == 0:

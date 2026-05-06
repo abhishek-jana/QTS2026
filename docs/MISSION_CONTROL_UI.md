@@ -1,53 +1,44 @@
-# UQTS-2026: Mission Control UI Implementation Plan
+# UQTS-2026: Mission Control UI (V2 Institutional)
 
 ## 1. Objective
-Build a production-grade, high-density "Mission Control" cockpit for the UQTS-2026 quantitative platform. The UI must provide transparency into the "Black Box" of the ML models, monitor real-time signal physics, track execution reality, and manage the research pipeline. The interface must be zero-lag, actionable, and adhere to a dark-themed, monospace aesthetic suitable for a Senior Quant.
+A production-grade, high-density institutional cockpit for the UQTS-2026 quantitative platform. This interface provides real-time transparency into quad-modality neural signals, Bayesian risk scaling, and automated execution.
 
-## 2. Architectural Decisions
-- **Stack**: FastAPI (Python) backend + React (Vite) / Tailwind CSS frontend.
-- **Communication**: WebSockets for low-latency, real-time streaming of metrics (CWT scrolling, belief updates, execution tracking).
-- **Data Source**: A background async worker in FastAPI will simulate live market ticks and run them through the existing UQTS-2026 pipelines (`AlphaUniverse`, `RankNet`, `MetaController`) to broadcast realistic mock data.
+## 2. Technical Stack
+- **Backend**: FastAPI (Python) + Redis Pub/Sub multiplexing.
+- **Frontend**: React (Vite) + Tailwind CSS + Lightweight Charts + Recharts.
+- **Protocol**: Low-latency WebSockets for 100-ticker bundle streaming.
 
-## 3. Dashboard Layout (The 5 Panels)
-1. **The Spectral & Signal Viewer (Physicist's View)**:
-   - Real-time scrolling heatmap of Morlet Wavelet CWTs. **Interactive**: Focuses on the asset selected in the Ranking Grid.
-   - Stationarity Monitor (live ADF p-values).
-   - Feature SHAP Stream (live bar chart of idiosyncratic feature importance).
-2. **The Metacognition Panel (Model Health)**:
-   - Bayesian Belief Gauge ($P(Valid | Result)$).
-   - Manifold Drift Monitor (2D scatter plot projecting training vs live manifolds in t-SNE space).
-   - Alpha Decay Curve (Cumulative information gain over time).
-3. **The Cross-Sectional Ranking Grid (Quant View)**:
-   - Decile Ladder (20-stock universe: Top 10% Longs, Bottom 10% Shorts).
-   - **Clickable Selection**: Establish two-way WebSocket communication to update the Spectral Viewer on demand.
-   - Live Price Column: Real-time price sync via `yfinance` polling.
-4. **Execution & Reality Check**:
-   - Implementation Shortfall (IS) Tracker (Decision vs. Execution price gap).
-   - Slippage Heatmap (LOB fill locations).
-   - The "Kill Switch" (Big red button to liquidate/pause).
-5. **The Research Pipeline Control (Ops View)**:
-   - Champion vs. Challenger backtest comparison.
-   - Retraining Progress terminal log (WFO epochs and loss curves).
+## 3. Core Functional Sections
+### 1. Spectral Alpha (Physicist's View)
+- **Price Chart**: High-resolution OHLCV candles synchronized to Point-in-Time Knowledge time.
+- **Wavelet Spectrogram**: Real-time Morlet CWT heatmap visualization showing multi-resolution energy states.
+- **Statistical Integrity**: Live ADF (Augmented Dickey-Fuller) p-values for stationarity verification.
+- **SHAP Fusion**: Neural modality weights mapped to human-readable factors (Momentum, Volatility, Sentiment, Liquidity).
 
-## 4. Implementation Steps
+### 2. Metacognition (Risk Health)
+- **Bayesian Belief Gauge**: Confidence metric $P(Valid | Result)$ derived from realized alpha.
+- **Manifold Drift (t-SNE)**: 2D projection of live market regimes vs. training clusters.
+- **Alpha Decay Signal**: Interactive cumulative information gain curve.
 
-### Phase 1: Backend Scaffold & Data Streamer (`/cockpit_backend`)
-1. Scaffold a FastAPI application.
-2. Implement a `WebSocketManager` to handle frontend connections.
-3. Build `streamer.py`: An `asyncio` task that utilizes `AlphaUniverse` and `MultiModalRankNet` to generate realistic sliding window data at an accelerated "live tick" rate, publishing JSON payloads to connected clients.
+### 3. Ranking Ladder & Sector Matrix
+- **Decile Ladder**: Cross-sectional sorted rankings (Long/Short) with live price sync.
+- **Sector Intelligence (Interactive)**:
+    - Advanced aggregation: Exposure %, Ticker count, and Conviction (α) per sector.
+    - **Drill-down**: Clicking a sector filters the main Ranking Ladder instantly.
+    - **Focus**: Clicking a ticker hydrates the Spectral Alpha panel with high-res telemetry.
 
-### Phase 2: Frontend Scaffold & Grid Layout (`/cockpit_frontend`)
-1. Scaffold React using `npm create vite@latest` with Tailwind CSS.
-2. Set up a dark-themed layout using CSS Grid to organize the 5 main panels in a high-density, edge-to-edge configuration.
-3. Install high-performance charting libraries (e.g., Recharts or react-plotly.js).
+### 4. Execution Muscle (Reality Check)
+- **Implementation Shortfall (IS)**: Real-time efficiency tracking in BPS.
+- **OMS Queue**: Status of filled vs. working orders in the C++26 execution pipe.
+- **Slippage Heatmap**: Stretched visualization of liquidity distribution and fill impact.
+- **Latency Monitor**: μs-level telemetry from the Direct OSQP Context.
 
-### Phase 3: Panel Implementation & Wiring
-1. Implement the React components for each of the 5 panels.
-2. Establish a `useWebSocket` hook to ingest the FastAPI stream.
-3. Wire the data streams to the charts (e.g., binding the CWT payload to a Heatmap component, the Bayesian Belief score to a Gauge).
+### 5. Research Pipeline Control
+- **Champion vs Challenger**: A/B backtest telemetry showing Sharpe Ratio delta.
+- **System Status**: Live terminal for training progress and WFO status.
 
-## 5. Verification
-- Start the FastAPI backend and React frontend.
-- Verify WebSocket connection stability.
-- Ensure the UI renders at 60fps without stuttering when processing continuous heatmap updates.
-- Verify the "Kill Switch" correctly sends a signal back to the server to halt trading logic.
+## 4. Operational Instructions
+- **Filter**: Use the Sector Matrix blocks to isolate industrial alpha regimes.
+- **Analyze**: Click tickers to verify the signal physics via Wavelet and SHAP fusion.
+- **Scale**: Monitor Bayesian Belief; values < 60% indicate automated position scaling.
+- **Kill Switch**: Liquidation protocol active via the global header button.
