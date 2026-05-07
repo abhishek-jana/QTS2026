@@ -30,7 +30,7 @@ class WFOEngine:
         y = torch.tensor(target_labels.values).float().to(self.device)
         
         # High-level training call
-        model.fit(X, y, epochs=self.model_params.get('epochs', 50), device=self.device)
+        model.fit((X, y), epochs=self.model_params.get('epochs', 50), device=self.device)
         
         return model.state_dict()
 

@@ -72,3 +72,18 @@ Final verification of the system under "load" (20+ stocks) and comparison of Ran
 ### Blocked by
 3. Constant-Time Math Pipeline
 4. TradingView Canvas Charting
+
+---
+
+## 6. V2: The 60-Stock Sweet Spot (Intraday)
+### What to build
+Transition the system from Daily to 15-Minute resolution with a restricted 60-stock universe and diurnal normalization.
+
+### Acceptance criteria
+- [ ] `config.yaml` universe reduced to 60 mega-cap leaders.
+- [ ] `real_data_ingestor.py` fetches `15Min` bars and filters for RTH (09:30-16:00).
+- [ ] Data processing pipeline implements Diurnal Standardization for returns and volume.
+- [ ] Wavelet scale density increased in `config.yaml` without OOM errors on RTX 2070.
+
+### Blocked by
+5. Performance Benchmarking & Mathematical Parity

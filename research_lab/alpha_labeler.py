@@ -15,8 +15,8 @@ class AlphaLabeler:
         Calculates the residuals of the asset returns regressed against market returns.
         Ensures the resulting alpha is uncorrelated with the market.
         """
-        # Handle cases with NaN (common in shifted returns)
-        mask = ~np.isnan(asset_returns) & ~np.isnan(market_returns)
+        # Handle cases with NaN or inf (common in shifted returns or data errors)
+        mask = np.isfinite(asset_returns) & np.isfinite(market_returns)
         if not mask.any():
             return np.full_like(asset_returns, np.nan)
             
@@ -50,10 +50,10 @@ class AlphaLabeler:
         """
         return df.apply(lambda row: (row - row.mean()) / row.std() if row.std() > 0 else row - row.mean(), axis=1)
 
-    def generate_labels(self, pit_view: pd.DataFrame, horizon: int = 21, ticker_col: str = 'ticker') -> pd.DataFrame:
+    def generate_labels(self, pit_view: pd.DataFrame, horizon: int = 21, ticker_col: str = 'ticker', timeframe: str = '1Day') -> pd.DataFrame:
         """
         Generates forward log-returns for multiple tickers.
-        Returns a DataFrame indexed by event_time with tickers as columns.
+        Correctly handles horizon scaling for intraday timeframes.
         """
         # Ensure event_time is a column for pivoting if it's currently the index
         df = pit_view.reset_index() if 'event_time' not in pit_view.columns else pit_view
@@ -64,7 +64,15 @@ class AlphaLabeler:
         # Pivot to get a wide format: rows=event_time, cols=tickers
         wide_price = df.pivot(index='event_time', columns=ticker_col, values='close')
         
+        # SENIOR FIX: Convert day-based horizon to bar-based shift
+        # For 15Min, there are ~26 bars in a 6.5h trading day (9:30-16:00)
+        # For 1Hour, there are ~7 bars.
+        shift_bars = horizon
+        if timeframe == '15Min': shift_bars = horizon * 26
+        elif timeframe == '1Hour': shift_bars = horizon * 7
+        
         # Calculate forward log-returns: ln(P_{t+N} / P_t)
-        forward_returns = np.log(wide_price.shift(-horizon) / wide_price)
+        # We shift negatively to look into the "future"
+        forward_returns = np.log(wide_price.shift(-shift_bars) / wide_price)
         
         return forward_returns

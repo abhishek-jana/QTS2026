@@ -113,7 +113,7 @@ class RankNet(nn.Module):
                     optimizer.zero_grad(); idx = indices[b*abs_ : (b+1)*abs_]
                     if len(idx) < 2: continue
                     X, y = X_all[idx].to(device), y_all[idx].to(device)
-                    ii, jj = torch.randperm(len(idx)), torch.randperm(len(idx))
+                    ii, jj = torch.randperm(len(idx), device=device), torch.randperm(len(idx), device=device)
                     with torch.amp.autocast('cuda', enabled=(device.type == 'cuda')):
                         loss = criterion(self.forward(X[ii]), self.forward(X[jj]), torch.sign(y[ii] - y[jj]).unsqueeze(1))
                     scaler.scale(loss).backward(); scaler.step(optimizer); scaler.update(); tl += loss.item()

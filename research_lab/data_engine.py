@@ -12,13 +12,20 @@ class IDataProvider(Protocol):
 class DataEngine:
     def __init__(self, storage_path: str = "data/uqts_bitemporal.ddb", config_path: str = "config.yaml", read_only: bool = False):
         self.storage_path = storage_path
-        # SENIOR FIX: Support read_only mode to allow concurrent access from UI and Worker
-        self.conn = duckdb.connect(self.storage_path, read_only=read_only)
+        self.read_only = read_only
+        self._conn = None
         self.config_path = config_path
         self.features = ['close']
         self._load_config()
         if not read_only:
             self._init_db()
+
+    @property
+    def conn(self):
+        if self._conn is None:
+            # SENIOR FIX: Support read_only mode to allow concurrent access from UI and Worker
+            self._conn = duckdb.connect(self.storage_path, read_only=self.read_only)
+        return self._conn
 
     def _load_config(self):
         try:
@@ -43,32 +50,44 @@ class DataEngine:
         """)
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_tk ON market_data (ticker, knowledge_time)")
 
+    def close(self):
+        if self._conn:
+            try:
+                self._conn.close()
+            except Exception: pass
+            self._conn = None
+
     def insert_dataframe(self, df: pd.DataFrame):
         if df.empty: return
         self.conn.register("df", df)
         self.conn.execute("INSERT INTO market_data SELECT * FROM df")
         self.conn.unregister("df")
 
-    def get_batch_pit_view(self, tickers: List[str], as_of: datetime) -> pd.DataFrame:
+    def get_batch_pit_view(self, tickers: List[str], as_of: datetime, start_time: Optional[datetime] = None) -> pd.DataFrame:
         if not tickers: return pd.DataFrame()
         ticker_list = "', '".join(tickers)
         
         # SENIOR FIX: Always include standard OHLCV columns + any extra requested features
-        # This prevents 'KeyError: open' in visualization layers.
         standard_cols = ['ticker', 'event_time', 'knowledge_time', 'open', 'high', 'low', 'close', 'volume', 'is_correction']
         feature_cols = [f for f in self.features if f not in standard_cols]
         all_cols = standard_cols + feature_cols
         col_str = ", ".join(all_cols)
         
+        # ML RESEARCH FIX: Add event_time filter to prevent O(N) slowdown over history
+        time_filter = f"AND knowledge_time <= '{as_of.isoformat()}'"
+        if start_time:
+            time_filter += f" AND event_time >= '{start_time.isoformat()}'"
+            
         query = f"""
             WITH ranked_data AS (
                 SELECT *, ROW_NUMBER() OVER(PARTITION BY ticker, event_time ORDER BY knowledge_time DESC) as rn
                 FROM market_data
-                WHERE ticker IN ('{ticker_list}') AND knowledge_time <= '{as_of.isoformat()}'
+                WHERE ticker IN ('{ticker_list}') {time_filter}
             )
             SELECT {col_str} FROM ranked_data WHERE rn = 1 ORDER BY event_time ASC
         """
-        pit_view = self.conn.execute(query).fetchdf()
+        # SENIOR OPTIMIZATION: Use .df() for optimized transfer to pandas, avoids RecordBatchReader issues
+        pit_view = self.conn.execute(query).df()
         if pit_view.empty: return pit_view
         return pit_view.set_index('event_time')
 

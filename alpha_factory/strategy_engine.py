@@ -30,7 +30,7 @@ class StrategyEngine:
         self.data_provider = data_provider
         
         # 1. Initialize AlphaUniverse (Plugins are now auto-discovered by the Registry)
-        self.lab = AlphaUniverse(data_provider=self.data_provider, config=self.config)
+        self.lab = AlphaUniverse(conn=self.data_provider.conn, config=self.config)
 
         # 2. Setup Ingestor
         self.ingestor = InstitutionalIngestor(self.data_provider, config=self.config)

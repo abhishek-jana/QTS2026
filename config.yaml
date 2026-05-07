@@ -1,155 +1,128 @@
-universe:
-  tickers:
-    - SPY
-    - AAPL
-    - MSFT
-    - NVDA
-    - GOOGL
-    - AMZN
-    - META
-    - TSLA
-    - LLY
-    - UNH
-    - JPM
-    - V
-    - MA
-    - AVGO
-    - HD
-    - PG
-    - COST
-    - JNJ
-    - ABBV
-    - MRK
-    - BAC
-    - CRM
-    - ORCL
-    - ADBE
-    - AMD
-    - PEP
-    - KO
-    - TMO
-    - WMT
-    - MCD
-    - CSCO
-    - NFLX
-    - ABT
-    - DHR
-    - WFC
-    - ACN
-    - QCOM
-    - LIN
-    - GE
-    - PM
-    - TXN
-    - INTU
-    - AMGN
-    - VZ
-    - AMAT
-    - UNP
-    - LOW
-    - BX
-    - GS
-    - ISRG
-    - HON
-    - MS
-    - CVS
-    - COP
-    - IBM
-    - BA
-    - SPGI
-    - CAT
-    - LMT
-    - RTX
-    - DE
-    - TJX
-    - BKNG
-    - BLK
-    - ELV
-    - MU
-    - SCHW
-    - GILD
-    - PLD
-    - SBUX
-    - MMC
-    - MO
-    - CB
-    - ADI
-    - MDT
-    - REGN
-    - ZTS
-    - AMT
-    - LRCX
-    - CI
-    - PFE
-    - SYK
-    - BSX
-    - FI
-    - ADP
-    - PGR
-    - PSX
-    - EOG
-    - VRTX
-    - ITW
-    - SLB
-    - T
-    - MPC
-    - ETN
-    - BDX
-    - CME
-    - EQIX
-    - SNPS
-    - KLAC
-    - MCO
-
 data_engine:
-  provider: "alpaca"
-  storage_path: "data/uqts_bitemporal.ddb"
-  start_date: "2016-01-01"
   features:
-    - close
-    - volume
-
-signal_physics:
-  lookback_days: 63
-  horizon_days: 21
-  math_padding: 100
-  fractional_differentiation:
-    d_param: 0.4
-  wavelet_transform:
-    scales: [1, 2, 4, 8, 16, 32, 64, 128]
-    wavelet: "mexh"
-
-model_pipeline:
-  model_path: "models/challenger_v1.pt"
-  architecture:
-    hidden_dim: 64
-    vit_heads: 4
-    gnn_layers: 2
-  training:
-    lr: 0.002
-    epochs: 25
-    batch_size: 1024
-    early_stopping_patience: 3
-    weight_decay: 0.0001
-    dropout: 0.4
-
-risk_metacontroller:
-  prior_belief: 0.75
-
+  - close
+  - volume
+  provider: alpaca
+  start_date: '2016-01-01'
+  storage_path: data/uqts_v2_intraday.ddb
+  timeframe: 15Min
 execution_muscle:
-  trading_mode: "paper" # Options: "sim", "paper", "live"
-  oms:
-    base_url: "https://paper-api.alpaca.markets"
+  max_position_size: 0.05
+  min_belief_threshold: 0.65
   mpc_solver:
     horizon: 5
     impact_penalty: 0.01
     variance_penalty: 0.1
-  min_belief_threshold: 0.65
-  max_position_size: 0.05
+  oms:
+    base_url: https://paper-api.alpaca.markets
   safety_limits:
+    kill_switch_enabled: true
     max_notional_per_order: 10000.0
     max_total_leverage: 2.5
-    kill_switch_enabled: true
-
+  trading_mode: paper
+model_pipeline:
+  architecture:
+    gnn_layers: 2
+    hidden_dim: 64
+    vit_heads: 4
+  evaluation_dataset_path: data/oos_steps_v2.pt
+  model_path: models/challenger_v2.pt
+  training:
+    batch_size: 1024
+    dropout: 0.4
+    early_stopping_patience: 3
+    epochs: 25
+    lr: 0.002
+    weight_decay: 0.0001
+  training_dataset_path: data/train_dataset_v2_full.pt
+risk_metacontroller:
+  prior_belief: 0.75
+signal_physics:
+  fractional_differentiation:
+    d_param: 0.4
+  horizon_days: 21
+  lookback_days: 63
+  math_padding: 250
+  wavelet_transform:
+    scales:
+    - 1
+    - 2
+    - 3
+    - 4
+    - 6
+    - 8
+    - 12
+    - 16
+    - 24
+    - 32
+    - 48
+    - 64
+    - 96
+    - 128
+    - 192
+    - 256
+    wavelet: mexh
 ui_cockpit:
-  update_interval_ms: 1000 # Pulse rate for Mission Control
+  update_interval_ms: 1000
+universe:
+  tickers:
+  - SPY
+  - AAPL
+  - MSFT
+  - NVDA
+  - GOOGL
+  - AMZN
+  - META
+  - TSLA
+  - LLY
+  - UNH
+  - JPM
+  - V
+  - MA
+  - AVGO
+  - HD
+  - PG
+  - COST
+  - JNJ
+  - ABBV
+  - MRK
+  - BAC
+  - CRM
+  - ORCL
+  - ADBE
+  - AMD
+  - PEP
+  - KO
+  - TMO
+  - WMT
+  - MCD
+  - CSCO
+  - NFLX
+  - ABT
+  - DHR
+  - WFC
+  - ACN
+  - QCOM
+  - LIN
+  - GE
+  - PM
+  - TXN
+  - INTU
+  - AMGN
+  - VZ
+  - AMAT
+  - UNP
+  - LOW
+  - BX
+  - GS
+  - ISRG
+  - HON
+  - MS
+  - CVS
+  - COP
+  - IBM
+  - BA
+  - SPGI
+  - CAT
+  - LMT
+  - RTX

@@ -22,7 +22,8 @@ class BacktestOrchestrator:
         
         scales = np.array(self.config['signal_physics']['wavelet_transform']['scales'])
         self.lookback, self.horizon = self.config['signal_physics']['lookback_days'], self.config['signal_physics']['horizon_days']
-        self.universe = AlphaUniverse(data_provider=self.engine, config=self.config)
+        # SENIOR FIX: Pass the shared connection to enable safe parallelization
+        self.universe = AlphaUniverse(conn=self.engine.conn, config=self.config)
         self.n_scales = len(scales)
 
     def run_ingestion(self):
@@ -43,7 +44,15 @@ class BacktestOrchestrator:
 
     def _collect_training_data(self, start: datetime, end: datetime) -> MultiModalBatch:
         logger.info(f"📥 Collecting multi-regime training data ({start.date()} -> {end.date()})...")
-        steps = self.universe.walk_forward(universe=self.tickers, start_date=start, end_date=end, stride=1, lookback=self.lookback, horizon=self.horizon, latest_only=True)
+        
+        # SENIOR FIX: Explicitly close the main connection to release the DuckDB lock.
+        # This is mandatory before Parallel walk_forward starts.
+        self.engine.close()
+        
+        # SENIOR FIX: Use walk_forward to avoid OOM/Hang on large intraday datasets.
+        # stride=1 day ensures we get one sample per trading day.
+        # latest_only=True + the new 16:00 alignment in snapshot() ensures high fidelity.
+        steps = self.universe.walk_forward(universe=self.tickers, start_date=start, end_date=end, stride=1, latest_only=True, backtest_mode=True)
         if not steps: logger.error("❌ NO TRAINING SAMPLES PRODUCED."); raise ValueError("Empty dataset.")
         
         modalities = list(steps[0]['batch'].data.keys())
@@ -66,6 +75,7 @@ class BacktestOrchestrator:
         batch_size = self.config['model_pipeline']['training'].get('batch_size', 1024)
         wd = self.config['model_pipeline']['training'].get('weight_decay', 0.0002)
         do = self.config['model_pipeline']['training'].get('dropout', 0.5)
+        model_path = self.config['model_pipeline'].get('model_path', 'models/challenger_v2.pt')
         
         specs = []
         for p in self.universe.plugins:
@@ -82,11 +92,14 @@ class BacktestOrchestrator:
         torch.serialization.add_safe_globals([MultiModalBatch, dt_class, pd.Timestamp, pd._libs.tslibs.timestamps._unpickle_timestamp])
 
         if not skip_train:
-            cache_path = "data/train_dataset.pt"
+            cache_path = self.config['model_pipeline'].get('training_dataset_path', 'data/train_dataset_v2_full.pt')
             if os.path.exists(cache_path) and not using_subset:
                 logger.info(f"📦 LOADING CACHED TRAINING FEATURES: {cache_path}")
                 train_dataset = torch.load(cache_path, weights_only=True)
-                if len(train_dataset.data) != len(specs):
+                # SENIOR FIX: Validate cache compatibility (modalities AND scale count)
+                cache_scales = train_dataset.data['x_spatial'].shape[2] if 'x_spatial' in train_dataset.data else 0
+                if len(train_dataset.data) != len(specs) or cache_scales != self.n_scales:
+                     logger.warning("⚠️ Cache mismatch detected (scales or modalities changed). Re-generating training data...")
                      train_dataset = self._collect_training_data(train_start, train_end); torch.save(train_dataset, cache_path)
             else: 
                 train_dataset = self._collect_training_data(train_start, train_end)
@@ -105,18 +118,42 @@ class BacktestOrchestrator:
             champion.fit((train_dataset.data['x_spatial'][:, 0, :, -1], train_dataset.labels), epochs=ep, lr=lr, device=device, batch_size=batch_size, patience=pat, weight_decay=wd)
             logger.info("🚀 Training Challenger (Multi-Modal)...")
             challenger.fit(train_dataset, epochs=ep, lr=lr, device=device, batch_size=batch_size, patience=pat, weight_decay=wd, val_dataset=val_dataset)
-            os.makedirs("models", exist_ok=True); challenger.export("models/challenger_v1.pt"); torch.save(champion.state_dict(), "models/champion_baseline.pt")
-            logger.success("✅ Training complete. Models exported.")
+            os.makedirs("models", exist_ok=True); challenger.export(model_path); torch.save(champion.state_dict(), "models/champion_baseline_v2.pt")
+            logger.success(f"✅ Training complete. Models exported to {model_path}")
         else:
-            logger.info("⏭️ SKIPPING TRAINING. Loading models...")
-            challenger = torch.jit.load("models/challenger_v1.pt").to(device)
-            if os.path.exists("models/champion_baseline.pt"): champion.load_state_dict(torch.load("models/champion_baseline.pt", weights_only=True))
+            logger.info(f"⏭️ SKIPPING TRAINING. Loading models from {model_path}...")
+            challenger = torch.jit.load(model_path).to(device)
+            if os.path.exists("models/champion_baseline_v2.pt"): champion.load_state_dict(torch.load("models/champion_baseline_v2.pt", weights_only=True))
             champion.to(device)
 
         logger.info(f"🧪 Evaluating on OOS regime ({test_start.date()} -> {test_end.date()})...")
-        oos_cache_path = "data/oos_steps.pt"
-        if os.path.exists(oos_cache_path) and not using_subset: steps = torch.load(oos_cache_path, weights_only=True)
+        oos_cache_path = self.config['model_pipeline'].get('evaluation_dataset_path', 'data/oos_steps.pt')
+        if os.path.exists(oos_cache_path) and not using_subset: 
+            logger.info(f"📦 LOADING CACHED BACKTEST DATA: {oos_cache_path}")
+            steps = torch.load(oos_cache_path, weights_only=True)
+            # SENIOR FIX: Validate OOS cache compatibility (modalities AND scale count)
+            if steps:
+                batch = steps[0]['batch']
+                cache_scales = batch.data['x_spatial'].shape[2] if 'x_spatial' in batch.data else 0
+                cache_modalities = list(batch.data.keys())
+                spec_modalities = [s.name for s in specs]
+                
+                mismatch = False
+                if cache_scales != self.n_scales:
+                    logger.warning(f"⚠️ OOS Cache scale mismatch: Cache has {cache_scales}, Config has {self.n_scales}")
+                    mismatch = True
+                elif set(cache_modalities) != set(spec_modalities):
+                    logger.warning(f"⚠️ OOS Cache modality mismatch: Cache {cache_modalities}, Specs {spec_modalities}")
+                    mismatch = True
+                    
+                if mismatch:
+                    logger.info("🔄 Re-generating OOS evaluation data...")
+                    self.engine.close()
+                    steps = self.universe.walk_forward(universe=self.tickers, start_date=test_start, end_date=test_end, stride=21, lookback=self.lookback, horizon=5, latest_only=True)
+                    if not using_subset: torch.save(steps, oos_cache_path)
         else: 
+            # SENIOR FIX: Release lock
+            self.engine.close()
             steps = self.universe.walk_forward(universe=self.tickers, start_date=test_start, end_date=test_end, stride=21, lookback=self.lookback, horizon=5, latest_only=True)
             if not using_subset: torch.save(steps, oos_cache_path)
             

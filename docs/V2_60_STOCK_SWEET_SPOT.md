@@ -20,5 +20,12 @@ V2 marks the transition from broad Daily alpha to deep Intraday alpha. Rather th
 *   **Concept:** Use the freed VRAM to increase wavelet scale density (scales per octave).
 *   **Advantage:** Provides the Vision Transformer (ViT) with much higher "texture" in the Morlet energy manifold, allowing for more precise peak/shock detection.
 
+## 4. Intraday Non-Stationarity Mitigations (ML Research Fixes)
+To prevent the model from overfitting to microstructural noise or time-of-day clock functions, the following safeguards are mandatory for V2:
+
+*   **Diurnal Standardization:** Returns and Volume must be normalized by their specific 15-minute time-of-day bucket (U-Shape volatility curve). This ensures the model learns "Alpha" rather than just "it is 10:00 AM."
+*   **Overnight Gap Separation:** 17.5-hour gaps between RTH sessions must be treated as discrete events. Do not stitch the 09:30 bar directly to the previous day's 16:00 bar without specific gap-adjusted normalization.
+*   **Cone of Influence (COI) Management:** Increase `math_padding` in `config.yaml` to ensure wavelet edge distortions do not bleed into the live prediction frame.
+
 ---
 **Status:** Approved Strategic Pivot - Active Development.

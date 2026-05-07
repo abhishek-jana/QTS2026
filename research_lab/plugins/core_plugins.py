@@ -64,8 +64,14 @@ class SpatialPlugin(ModalityPlugin):
         from research_lab.alpha_core import WaveletFeatureGenerator, FractionalDifferencer
         sig = kwargs.get('signal_config', {})
         d = sig.get('fractional_differentiation', {}).get('d_param', 0.4)
-        sc = sig.get('wavelet_transform', {}).get('scales', 2**np.arange(1, 9))
-        wv = sig.get('wavelet_transform', {}).get('wavelet', 'mexh')
+        
+        # SENIOR FIX: Ensure scales are correctly extracted from config
+        wavelet_config = sig.get('wavelet_transform', {})
+        sc = wavelet_config.get('scales', 2**np.arange(1, 9))
+        wv = wavelet_config.get('wavelet', 'mexh')
+        
+        logger.info(f"SpatialPlugin: Initializing with {len(sc)} scales.")
+        
         self.fd = FractionalDifferencer(d=d)
         self.wfg = WaveletFeatureGenerator(scales=np.array(sc), wavelet=wv); self._name = "x_spatial"
     @property
@@ -103,8 +109,15 @@ class VolumePlugin(ModalityPlugin):
     def name(self) -> str: return self._name
     def transform(self, pit_view: pd.DataFrame, lookback: int) -> torch.Tensor:
         if 'volume' not in pit_view.columns: return torch.zeros((len(pit_view)-lookback+1, lookback, 1))
-        # Log-transform and Z-score volume
-        v = np.log1p(pit_view['volume'].values)
-        v_norm = (v - np.mean(v)) / (np.std(v) + 1e-9)
+        
+        v = pit_view['volume'].values
+        # SENIOR FIX: If volume is already standardized (contains negative values), skip log1p
+        if np.any(v < 0):
+            v_norm = v
+        else:
+            # Log-transform and Z-score raw volume
+            v_log = np.log1p(v)
+            v_norm = (v_log - np.mean(v_log)) / (np.std(v_log) + 1e-9)
+            
         windows = [v_norm[t-lookback:t].reshape(-1, 1) for t in range(lookback, len(v_norm) + 1)]
         return torch.tensor(np.array(windows)).float()
