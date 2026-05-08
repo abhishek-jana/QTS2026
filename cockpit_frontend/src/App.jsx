@@ -11,8 +11,25 @@ import {
   AlertTriangle,
   HelpCircle,
   X,
-  Filter
+  Filter,
+  GripVertical
 } from 'lucide-react';
+import {
+  DndContext,
+  closestCenter,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+} from '@dnd-kit/core';
+import {
+  arrayMove,
+  SortableContext,
+  sortableKeyboardCoordinates,
+  verticalListSortingStrategy,
+  useSortable,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 import { 
   LineChart, 
   Line, 
@@ -53,6 +70,38 @@ const PriceChart = ({ data, ticker }) => {
   const chartContainerRef = useRef();
   const chartRef = useRef();
   const seriesRef = useRef();
+  const [selectedRangeLabel, setSelectedRangeLabel] = useState('ALL');
+  const [hasInitialized, setHasInitialized] = useState(false);
+
+  const ranges = [
+    { label: '1W', value: 7 * 24 * 3600 },
+    { label: '1M', value: 30 * 24 * 3600 },
+    { label: '3M', value: 90 * 24 * 3600 },
+    { label: '1Y', value: 365 * 24 * 3600 },
+    { label: '5Y', value: 5 * 365 * 24 * 3600 },
+    { label: '10Y', value: 10 * 365 * 24 * 3600 },
+    { label: 'ALL', value: null }
+  ];
+
+  const applyRange = (rangeLabel, chartData) => {
+    if (!chartRef.current || !chartData || chartData.length === 0) return;
+    
+    if (rangeLabel === 'ALL') {
+      chartRef.current.timeScale().fitContent();
+    } else {
+      const range = ranges.find(r => r.label === rangeLabel);
+      if (range && range.value) {
+        const latest = chartData[chartData.length - 1].time;
+        const from = latest - range.value;
+        chartRef.current.timeScale().setVisibleRange({ from, to: latest });
+      }
+    }
+  };
+
+  const handleRangeChange = (range) => {
+    setSelectedRangeLabel(range.label);
+    applyRange(range.label, data);
+  };
 
   useEffect(() => {
     if (!chartContainerRef.current) return;
@@ -61,7 +110,12 @@ const PriceChart = ({ data, ticker }) => {
       grid: { vertLines: { color: '#1e293b' }, horzLines: { color: '#1e293b' } },
       width: chartContainerRef.current.clientWidth || 400,
       height: 250,
-      timeScale: { borderColor: '#1e293b', timeVisible: true, secondsVisible: false },
+      timeScale: { 
+        borderColor: '#1e293b', 
+        timeVisible: true, 
+        secondsVisible: false,
+        shiftVisibleRangeOnNewBar: true, // Key for professional behavior
+      },
     });
     const series = chart.addSeries(CandlestickSeries, { 
         upColor: '#10b981', 
@@ -84,6 +138,7 @@ const PriceChart = ({ data, ticker }) => {
     };
   }, []);
 
+  // Handle data updates separately from initialization
   useEffect(() => {
     if (seriesRef.current && data && data.length > 0) {
       const seen = new Set();
@@ -97,15 +152,35 @@ const PriceChart = ({ data, ticker }) => {
       
       if (cleanData.length > 0) {
         seriesRef.current.setData(cleanData);
-        chartRef.current.timeScale().fitContent();
+        
+        if (!hasInitialized) {
+          chartRef.current.timeScale().fitContent();
+          setHasInitialized(true);
+        } else if (selectedRangeLabel !== 'ALL') {
+          // Re-apply range to stick to the right edge with user's zoom
+          applyRange(selectedRangeLabel, cleanData);
+        }
       }
     }
-  }, [data]);
+  }, [data]); // Only re-run on data change
 
   return (
     <div className="w-full flex flex-col gap-1">
-      <div className="text-lg font-mono text-emerald-500 uppercase font-bold tracking-tighter">
-        {ticker} LIVE FEED (SIP_STREAM)
+      <div className="flex justify-between items-center mb-1">
+        <div className="text-lg font-mono text-emerald-500 uppercase font-bold tracking-tighter">
+          {ticker} LIVE FEED (SIP_STREAM)
+        </div>
+        <div className="flex gap-1">
+          {ranges.map(r => (
+            <button 
+              key={r.label}
+              onClick={() => handleRangeChange(r)}
+              className={`px-1.5 py-0.5 text-[10px] font-black border transition-all rounded-sm uppercase ${selectedRangeLabel === r.label ? 'bg-emerald-500 text-white border-emerald-500' : 'border-slate-800 bg-slate-900/50 text-slate-500 hover:text-emerald-400 hover:border-emerald-900/50'}`}
+            >
+              {r.label}
+            </button>
+          ))}
+        </div>
       </div>
       <div ref={chartContainerRef} className="w-full h-[250px] border border-slate-800 bg-black/50 shadow-inner" />
     </div>
@@ -113,11 +188,10 @@ const PriceChart = ({ data, ticker }) => {
 };
 
 const Heatmap = ({ data, title }) => {
-  const canvasRef = useRef(null);
+  const canvasRef = useRef();
   useEffect(() => {
-    if (!data || !data.length || !canvasRef.current) return;
-    const canvas = canvasRef.current; 
-    const ctx = canvas.getContext('2d');
+    if (!canvasRef.current || !data || data.length === 0) return;
+    const canvas = canvasRef.current; const ctx = canvas.getContext('2d', { alpha: false });
     const rows = data.length; 
     const cols = data[0].length;
     canvas.width = cols; canvas.height = rows;
@@ -144,57 +218,167 @@ const Heatmap = ({ data, title }) => {
   );
 };
 
-const RankingGrid = ({ ladder, onSelectTicker, filterSector, onClearFilter }) => {
-  const filtered = React.useMemo(() => {
-    if (!ladder) return [];
-    let items = ladder;
-    if (filterSector) items = items.filter(it => it.sector === filterSector);
+const SortableRow = ({ row, onSelectTicker }) => {
+  const [flash, setFlash] = useState(null);
+  const prevPriceRef = useRef(row.price);
+
+  useEffect(() => {
+    if (row.price !== prevPriceRef.current) {
+        setFlash(row.price > prevPriceRef.current ? 'up' : 'down');
+        const timer = setTimeout(() => setFlash(null), 1000);
+        prevPriceRef.current = row.price;
+        return () => clearTimeout(timer);
+    }
+  }, [row.price]);
+
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging
+  } = useSortable({ id: row.ticker });
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+    zIndex: isDragging ? 50 : 1,
+    backgroundColor: flash === 'up' ? 'rgba(16, 185, 129, 0.15)' : flash === 'down' ? 'rgba(239, 68, 68, 0.15)' : 'transparent',
+  };
+
+  return (
+    <tr 
+      ref={setNodeRef} 
+      style={style}
+      className={`border-b border-slate-800/40 hover:bg-emerald-500/10 cursor-pointer group transition-all relative ${flash ? 'duration-100' : 'duration-1000'}`}
+    >
+      <td className="py-2.5 pl-2">
+        <div {...attributes} {...listeners} className="cursor-grab active:cursor-grabbing p-1 text-slate-700 hover:text-emerald-500 transition-colors">
+          <GripVertical className="w-3 h-3" />
+        </div>
+      </td>
+      <td onClick={() => onSelectTicker(row.ticker)} className="py-2.5 flex items-center gap-2 transition-all group-hover:translate-x-1">
+        <div className={"w-1 h-3 " + (row.score > 0 ? "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]" : "bg-red-500")} />
+        <span className="font-bold text-slate-200 group-hover:text-emerald-400">{row.ticker}</span>
+      </td>
+      <td onClick={() => onSelectTicker(row.ticker)} className="text-right py-2 text-slate-400 pr-4">${(row.price || 0).toFixed(2)}</td>
+      <td onClick={() => onSelectTicker(row.ticker)} className={"text-right py-2 pr-4 " + (row.score > 0 ? "text-emerald-400" : "text-red-400")}>{(row.score || 0).toFixed(4)}</td>
+      <td onClick={() => onSelectTicker(row.ticker)} className={`text-right py-2 pr-4 font-black italic ${row.pnl_pct > 0 ? 'text-emerald-400' : row.pnl_pct < 0 ? 'text-rose-500' : 'text-slate-800'}`}>
+        {row.market_value > 0 ? (
+            <span className="flex flex-col text-right">
+                <span>${row.market_value.toLocaleString(undefined, {maximumFractionDigits: 0})}</span>
+                <span className="text-[10px] opacity-70">({row.pnl_pct > 0 ? '+' : ''}{row.pnl_pct.toFixed(1)}%)</span>
+            </span>
+        ) : '—'}
+      </td>
+      <td onClick={() => onSelectTicker(row.ticker)} className="text-right py-2 pr-2"><span className={"text-xs px-1 border " + (row.score > 0 ? "border-emerald-800 text-emerald-600" : "border-red-900 text-red-700") + " uppercase font-black"}>{row.score > 0 ? "Long" : "Short"}</span></td>
+    </tr>
+  );
+};
+
+const RankingGrid = ({ ladder, onSelectTicker, filterSector, onClearFilter, tickerOrder, sensors, handleDragEnd }) => {
+  const [showHoldingsOnly, setShowHoldingsOnly] = useState(false);
+  
+  const sortedData = React.useMemo(() => {
+    if (!ladder || !tickerOrder || tickerOrder.length === 0) return [];
+    
+    // Create map for fast lookup
     const map = {};
-    items.forEach(item => {
-      if (!map[item.ticker] || item.score > map[item.ticker].score) {
-        map[item.ticker] = { score: item.score, price: item.live_price, sector: item.sector };
-      }
+    ladder.forEach(item => {
+      map[item.ticker] = { 
+        ...item, 
+        price: item.live_price, 
+        pnl_pct: item.pnl_pct, 
+        market_value: item.market_value 
+      };
     });
-    return Object.entries(map).map(([ticker, d]) => ({ ticker, ...d })).sort((a, b) => b.score - a.score);
-  }, [ladder, filterSector]);
+
+    // Return items in tickerOrder
+    let items = tickerOrder
+      .map(ticker => map[ticker])
+      .filter(item => item !== undefined);
+
+    if (showHoldingsOnly) {
+        items = items.filter(item => Math.abs(item.market_value) > 0.1);
+    }
+
+    if (filterSector) {
+        items = items.filter(item => item.sector === filterSector);
+    }
+
+    return items;
+  }, [ladder, tickerOrder, filterSector, showHoldingsOnly]);
 
   return (
     <div className="flex-1 overflow-y-auto no-scrollbar pr-2 h-[520px]">
       <div className="flex justify-between items-center mb-2 border-b border-emerald-900/30 pb-1">
         <div className="text-base font-bold text-emerald-500/80 uppercase tracking-tighter italic">Decile Ladder (House View)</div>
-        {filterSector && (
-          <button onClick={onClearFilter} className="flex items-center gap-1 bg-emerald-500/10 border border-emerald-500/30 px-2 py-0.5 rounded-sm hover:bg-emerald-500/20 transition-all">
-            <span className="text-sm font-bold text-emerald-400 uppercase tracking-widest">{filterSector}</span>
-            <X className="w-2 h-2 text-emerald-400" />
-          </button>
-        )}
+        <div className="flex items-center gap-2">
+            <button 
+                onClick={() => setShowHoldingsOnly(!showHoldingsOnly)}
+                className={`px-2 py-0.5 text-[9px] font-black uppercase transition-all border ${showHoldingsOnly ? 'bg-emerald-500 text-white border-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.3)]' : 'border-slate-800 text-slate-600 hover:text-slate-400'}`}
+            >
+                Holdings Only
+            </button>
+            {filterSector && (
+            <button onClick={onClearFilter} className="flex items-center gap-1 bg-emerald-500/10 border border-emerald-500/30 px-2 py-0.5 rounded-sm hover:bg-emerald-500/20 transition-all">
+                <span className="text-sm font-bold text-emerald-400 uppercase tracking-widest">{filterSector}</span>
+                <X className="w-2 h-2 text-emerald-400" />
+            </button>
+            )}
+        </div>
       </div>
-      <table className="w-full text-sm border-collapse font-mono">
-        <thead className="sticky top-0 bg-slate-900 shadow-sm text-slate-500 uppercase">
-          <tr><th className="text-left py-2 font-normal">Ticker</th><th className="text-right py-2 pr-4 font-normal">Live Price</th><th className="text-right py-2 pr-4 font-normal">Z-Score</th><th className="text-right py-2 font-normal">Action</th></tr>
-        </thead>
-        <tbody>
-          {filtered.map((row) => (
-            <tr key={row.ticker} onClick={() => onSelectTicker(row.ticker)} className="border-b border-slate-800/40 hover:bg-emerald-500/10 cursor-pointer group transition-all">
-              <td className="py-2.5 flex items-center gap-2 transition-all group-hover:translate-x-1"><div className={"w-1 h-3 " + (row.score > 0 ? "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]" : "bg-red-500")} /><span className="font-bold text-slate-200 group-hover:text-emerald-400">{row.ticker}</span></td>
-              <td className="text-right py-2 text-slate-400 pr-4">${(row.price || 0).toFixed(2)}</td>
-              <td className={"text-right py-2 pr-4 " + (row.score > 0 ? "text-emerald-400" : "text-red-400")}>{(row.score || 0).toFixed(4)}</td>
-              <td className="text-right py-2"><span className={"text-xs px-1 border " + (row.score > 0 ? "border-emerald-800 text-emerald-600" : "border-red-900 text-red-700") + " uppercase font-black"}>{row.score > 0 ? "Long" : "Short"}</span></td>
+      
+      <DndContext 
+        sensors={sensors}
+        collisionDetection={closestCenter}
+        onDragEnd={handleDragEnd}
+      >
+        <table className="w-full text-sm border-collapse font-mono">
+          <thead className="sticky top-0 bg-slate-900 shadow-sm text-slate-500 uppercase z-10">
+            <tr>
+              <th className="w-6"></th>
+              <th className="text-left py-2 font-normal">Ticker</th>
+              <th className="text-right py-2 pr-4 font-normal">Price</th>
+              <th className="text-right py-2 pr-4 font-normal">Z-Score</th>
+              <th className="text-right py-2 pr-4 font-normal">Position</th>
+              <th className="text-right py-2 font-normal">Action</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <SortableContext 
+            items={tickerOrder}
+            strategy={verticalListSortingStrategy}
+          >
+            <tbody>
+              {sortedData.map((row) => (
+                <SortableRow key={row.ticker} row={row} onSelectTicker={onSelectTicker} />
+              ))}
+            </tbody>
+          </SortableContext>
+        </table>
+      </DndContext>
+      {sortedData.length === 0 && (
+        <div className="flex-1 flex flex-col items-center justify-center text-slate-800 p-10 text-center">
+            <Activity className="w-12 h-12 mb-4 opacity-20" />
+            <div className="text-lg font-black uppercase tracking-[0.3em] opacity-40">Awaiting Signal</div>
+            <div className="text-[10px] uppercase font-bold tracking-widest opacity-30 mt-2">No active holdings meet current filter criteria</div>
+        </div>
+      )}
     </div>
   );
 };
 
 const Panel = ({ title, icon: Icon, children, className = "" }) => (
   <div className={"bg-slate-900 border border-slate-700 p-4 flex flex-col h-fit shadow-lg " + className}>
-    <div className="flex-none flex items-center gap-2 mb-4 border-b border-slate-800 pb-2">
-      <Icon className="w-4 h-4 text-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.3)]" />
-      <h2 className="text-sm font-mono uppercase tracking-[0.2em] text-slate-300 font-bold">{title}</h2>
+    <div className="flex items-center gap-2 mb-4 border-b border-slate-800 pb-2">
+      <Icon className="w-4 h-4 text-emerald-500" />
+      <h2 className="text-sm font-black uppercase tracking-[0.2em] text-slate-400">{title}</h2>
     </div>
-    <div className="flex-1 min-h-0">{children}</div>
+    <div className="flex-1 min-h-0">
+      {children}
+    </div>
   </div>
 );
 
@@ -204,42 +388,37 @@ const MissionManual = ({ isOpen, onClose }) => {
     { 
       title: "1. Spectral Physics (4 Instruments)", 
       items: [
-        { label: "Price Chart", detail: "Real-time OHLCV candles synced to point-in-time knowledge. The 'Ground Truth' layer." },
-        { label: "Wavelet Heatmap", detail: "CWT Spectrogram. Brightness = Energy. Lower scales (top) = High frequency volatility; Higher scales (bottom) = Structural trends." },
-        { label: "ADF p-value", detail: "Augmented Dickey-Fuller stationarity test. Threshold: < 0.05. High values indicate non-stationary 'fluid' price action." },
+        { label: "Price Chart", detail: "Real-time OHLCV candles with persistent multi-year zoom (1W to 10Y). Resilient to incoming data ticks." },
+        { label: "Wavelet Heatmap", detail: "16-scale CWT Spectrogram. Brightness = Energy. Lower scales = High frequency; Higher scales = Structural trends." },
+        { label: "ADF p-value", detail: "Augmented Dickey-Fuller stationarity test. Threshold: < 0.05. Ensures model trades mean-reverting energy." },
         { label: "Alpha State", detail: "READY indicates the neural engine has locked onto a valid spectral energy pulse for the current ticker." }
       ] 
     },
     { 
-      title: "2. Neural Logic (1 Instrument)", 
+      title: "2. Neural Logic & Metacognition", 
       items: [
-        { label: "SHAP Fusion", detail: "Bridges latent dimensions (Spatial/Temporal) to factors. Momentum = Temporal memory; Volatility = Spatial variance; Sentiment = Graph-based sector rotation." }
+        { label: "SHAP Fusion", detail: "Bridges latent dimensions to factors: Momentum, Volatility, Sentiment, and Liquidity." },
+        { label: "Bayesian Belief", detail: "Confidence metric. Initializes at 50% ('Prove It' mode). Uses strict Bayesian updating to scale conviction." },
+        { label: "Manifold Drift", detail: "t-SNE projection. Circles = Base; Crosses = Live. Separation indicates Out-Of-Sample drift." },
+        { label: "Cumulative Gain", detail: "Integrates alpha performance over the session. Flattening signals regime exhaustion." }
       ] 
     },
     { 
-      title: "3. Metacognition (3 Instruments)", 
+      title: "3. Market Dynamics & Ledger", 
       items: [
-        { label: "Belief Score", detail: "Bayesian confidence metric P(Valid | Data). < 60% triggers automated downsizing; > 80% confirms regime alignment." },
-        { label: "Manifold Drift", detail: "t-SNE projection. Circles = Training centroids; Crosses = Live market state. Separation indicates Out-Of-Sample (OOS) drift." },
-        { label: "Cumulative Gain", detail: "Integrates alpha performance over the session. A flattening curve signals alpha decay or regime exhaustion." }
+        { label: "Decile Ladder", detail: "Alpha rankings with Drag & Drop reordering, Price Delta flashing, and a 'Holdings Only' active risk filter." },
+        { label: "Sector Matrix", detail: "Interactive exposure grid. Clicking a block filters the Decile Ladder to that specific sector." },
+        { label: "ROE (Invested)", detail: "Return on Exposure. Measures profit efficiency strictly against the capital currently at risk (Gross Notional)." },
+        { label: "Realized / Unrealized", detail: "Splits total P&L into banked profits (closed trades) and floating profit (open positions)." }
       ] 
     },
     { 
-      title: "4. Market Dynamics (3 Instruments)", 
+      title: "4. Execution Muscle", 
       items: [
-        { label: "Decile Ladder", detail: "Cross-sectional Z-score rankings. Longs (Top) vs. Shorts (Bottom) based on relative alpha conviction." },
-        { label: "Sector Matrix", detail: "Interactive grid showing industrial exposure. Clicking a block filters the Decile Ladder to that specific sector." },
-        { label: "L/S Spread", detail: "Line chart tracking the cumulative return delta between the Top and Bottom deciles. Measures portfolio alpha." }
-      ] 
-    },
-    { 
-      title: "5. Execution Muscle (5 Instruments)", 
-      items: [
-        { label: "IS (BPS)", detail: "Implementation Shortfall. Gap between arrival price and fill price. Values > 5bps suggest toxic flow or low liquidity." },
-        { label: "OMS Counters", detail: "Real-time FILLED / WORKING / REJECTED order counts. REJECTED indicates risk-limit breaches." },
-        { label: "Order Stream", detail: "Live scrolling log of every execution attempt, showing side, quantity, and timestamp." },
-        { label: "Slippage Matrix", detail: "5x5 dot grid mapping liquidity distribution. Darker dots = higher impact; Brighter dots = efficient fills." },
-        { label: "Sharpe Comparison", detail: "Real-time A/B test: Champion (V1) vs Challenger (V2). Tracks which model version is winning the current regime." }
+        { label: "OMS Queue", detail: "Real-time scrolling log showing side (BUY/SELL/SHORT/COVER), dynamic share quantity, and dollar notional." },
+        { label: "Sim Warp", detail: "In historical mode, displays the time-acceleration factor (e.g. 1.2M x) of the backtest." },
+        { label: "IS (BPS) & Slippage", detail: "Implementation Shortfall gap and 5x5 heatmap mapping liquidity distribution impact." },
+        { label: "Sharpe A/B Test", detail: "Real-time Champion (V1) vs Challenger (V2) comparison tracking regime dominance." }
       ] 
     }
   ];
@@ -249,7 +428,7 @@ const MissionManual = ({ isOpen, onClose }) => {
         <div className="p-5 border-b border-slate-800 flex justify-between items-center bg-emerald-500/10">
           <div className="flex items-center gap-3 text-emerald-400 font-bold uppercase tracking-[0.3em] text-base">
             <Terminal className="w-5 h-5 animate-pulse" /> 
-            UQTS-2026: 16-INSTRUMENT COMMAND MANUAL
+            UQTS-2026: COMMAND MANUAL V2.0
           </div>
           <button onClick={onClose} className="text-slate-500 hover:text-white transition-colors bg-slate-800/50 p-2 rounded-full hover:bg-rose-500/20">
             <X className="w-5 h-5" />
@@ -281,7 +460,7 @@ const MissionManual = ({ isOpen, onClose }) => {
               <div className="w-2 h-2 rounded-full bg-emerald-500 animate-ping" />
               SYSTEM_HEARTBEAT: NOMINAL
             </div>
-            <div className="text-xs text-slate-600 uppercase font-bold tracking-widest italic">C++26 OSQP Kernel // SIP_STREAM V2.5</div>
+            <div className="text-xs text-slate-600 uppercase font-bold tracking-widest italic">C++26 OSQP Kernel // V2 High-Density Alpha</div>
           </div>
           <button onClick={onClose} className="bg-emerald-600 text-black px-20 py-4 font-black uppercase text-sm hover:bg-emerald-400 shadow-[0_0_30px_rgba(16,185,129,0.4)] transition-all active:scale-95 border-none">
             ACKNOWLEDGE & INITIALIZE COCKPIT
@@ -298,7 +477,15 @@ export default function MissionControl() {
   const [status, setStatus] = useState('connecting');
   const [showManual, setShowManual] = useState(false);
   const [selectedSector, setSelectedSector] = useState(null);
+  const [tickerOrder, setTickerOrder] = useState([]);
   const ws = useRef(null);
+
+  const sensors = useSensors(
+    useSensor(PointerSensor),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    })
+  );
 
   useEffect(() => {
     ws.current = new WebSocket('ws://localhost:8000/ws/cockpit');
@@ -306,7 +493,16 @@ export default function MissionControl() {
     ws.current.onmessage = (e) => {
       try {
         const payload = JSON.parse(e.data);
-        if (payload.type === 'GLOBAL_UPDATE') setGlobalData(payload);
+        if (payload.type === 'GLOBAL_UPDATE') {
+            setGlobalData(payload);
+            // SENIOR FIX: Initialize ticker order ALPHABETICALLY if not yet set
+            if (payload.rankings?.ladder && tickerOrder.length === 0) {
+                const initialOrder = payload.rankings.ladder
+                    .map(item => item.ticker)
+                    .sort((a, b) => a.localeCompare(b));
+                setTickerOrder(initialOrder);
+            }
+        }
         else if (payload.type === 'SPECTRAL_UPDATE') {
             console.log("🟢 WS: Received Spectral Bundle for " + payload.spectral.ticker);
             setSpectralData(payload.spectral);
@@ -315,7 +511,18 @@ export default function MissionControl() {
     };
     ws.current.onclose = () => setStatus('disconnected');
     return () => ws.current.close();
-  }, []);
+  }, [tickerOrder.length]);
+
+  const handleDragEnd = (event) => {
+    const { active, over } = event;
+    if (active.id !== over.id) {
+      setTickerOrder((items) => {
+        const oldIndex = items.indexOf(active.id);
+        const newIndex = items.indexOf(over.id);
+        return arrayMove(items, oldIndex, newIndex);
+      });
+    }
+  };
 
   const handleSelectTicker = (ticker) => {
     console.log("🎯 UI: Triggering Spectral Focus for " + ticker);
@@ -344,12 +551,32 @@ export default function MissionControl() {
             <div className="text-sm text-slate-600 border border-slate-800 px-2 py-0.5 rounded-sm uppercase tracking-tighter">SIM_TIME: {globalData.timestamp}</div>
             <div className={"text-[10px] px-2 py-0.5 border font-black uppercase tracking-widest " + (inst.market_status === 'OPEN' ? "text-emerald-500 border-emerald-900/50 bg-emerald-950/20" : "text-amber-600 border-amber-900/50 bg-amber-950/20")}>Market {inst.market_status || 'OPEN'}</div>
             <div className="flex gap-6 px-6 border-l border-slate-800">
-               <div className="flex flex-col"><span className="text-[10px] text-slate-600 uppercase font-black tracking-widest">Gross Exp</span><span className="text-sm font-bold text-slate-100 italic">{(inst.gross_exposure || 0).toFixed(1)}%</span></div>
-               <div className="flex flex-col"><span className="text-[10px] text-slate-600 uppercase font-black tracking-widest">Net Exp</span><span className="text-sm font-bold text-slate-100">{(inst.net_exposure || 0).toFixed(1)}%</span></div>
-               <div className="flex flex-col border-l border-slate-800 pl-6"><span className="text-[10px] text-slate-600 uppercase font-black tracking-widest">Account Capital</span><span className="text-sm font-bold text-emerald-500 italic">${(inst.capital || 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span></div>
-               <div className="flex flex-col border-l border-slate-800 pl-6"><span className="text-[10px] text-slate-600 uppercase font-black tracking-widest">Total P&L</span><span className={"text-sm font-bold italic " + ((inst.pnl || 0) >= 0 ? "text-emerald-400" : "text-rose-500")}>{(inst.pnl || 0) >= 0 ? "+" : "-"}${(Math.abs(inst.pnl || 0)).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})} <span className="text-[10px] opacity-80">({(inst.pnl_pct || 0) >= 0 ? "+" : ""}{(inst.pnl_pct || 0).toFixed(2)}%)</span></span></div>
-               <div className="flex flex-col border-l border-slate-800 pl-6"><span className="text-[10px] text-slate-600 uppercase font-black tracking-widest">Latency</span><span className="text-sm font-bold text-emerald-500 italic">{(inst.data_latency_ms || 0).toFixed(0)}ms</span></div>
-               <div className="flex flex-col border-l border-slate-800 pl-6"><span className="text-[10px] text-slate-600 uppercase font-black tracking-widest">Freshness</span><span className="text-sm font-bold text-slate-400">{(inst.data_freshness_s || 0).toFixed(0)}s</span></div>
+               <div className="flex flex-col border-l border-slate-800 pl-6">
+                  <span className="text-[10px] text-slate-600 uppercase font-black tracking-widest">Active Pos</span>
+                  <span className={`text-sm font-bold italic transition-all ${(inst.active_positions || 0) > 0 ? 'text-emerald-400 animate-pulse' : 'text-slate-500'}`}>
+                    {(inst.active_positions || 0)}
+                  </span>
+               </div>
+               <div className="flex flex-col border-l border-slate-800 pl-6"><span className="text-[10px] text-slate-600 uppercase font-black tracking-widest">Gross Exp</span><span className="text-sm font-bold text-slate-100 italic">{(inst.gross_exposure || 0).toFixed(1)}%</span></div>
+               <div className="flex flex-col border-l border-slate-800 pl-6"><span className="text-[10px] text-slate-600 uppercase font-black tracking-widest">Account Value</span><span className="text-sm font-bold text-emerald-500 italic">${(inst.capital || 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span></div>
+               <div className="flex flex-col border-l border-slate-800 pl-6"><span className="text-[10px] text-slate-600 uppercase font-black tracking-widest">Buying Power</span><span className="text-sm font-bold text-cyan-500 italic">${(inst.buying_power || 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span></div>
+               <div className="flex flex-col border-l border-slate-800 pl-6">
+                  <span className="text-[10px] text-slate-600 uppercase font-black tracking-widest">ROE (Invested)</span>
+                  <span className={"text-sm font-bold italic " + ((inst.roe || 0) >= 0 ? "text-emerald-400" : "text-rose-500")}>{(inst.roe || 0) >= 0 ? "+" : ""}{(inst.roe || 0).toFixed(2)}%</span>
+               </div>
+               <div className="flex flex-col border-l border-slate-800 pl-6">
+                  <span className="text-[10px] text-slate-600 uppercase font-black tracking-widest">Realized / Unrealized</span>
+                  <div className="text-sm font-bold flex gap-2 italic">
+                    <span className={(inst.pnl_realized || 0) >= 0 ? "text-emerald-500" : "text-rose-500"}>
+                        {(inst.pnl_realized || 0) >= 0 ? '+' : '-'}${Math.abs(inst.pnl_realized || 0).toLocaleString(undefined, {maximumFractionDigits: 0})}
+                    </span>
+                    <span className="text-slate-700">/</span>
+                    <span className={(inst.pnl_unrealized || 0) >= 0 ? "text-emerald-400" : "text-rose-400"}>
+                        {(inst.pnl_unrealized || 0) >= 0 ? '+' : '-'}${Math.abs(inst.pnl_unrealized || 0).toLocaleString(undefined, {maximumFractionDigits: 0})}
+                    </span>
+                  </div>
+               </div>
+               <div className="flex flex-col border-l border-slate-800 pl-6"><span className="text-[10px] text-slate-600 uppercase font-black tracking-widest">{inst.trading_mode === 'sim' ? 'Sim Warp' : 'Latency'}</span><span className="text-sm font-bold text-emerald-500 italic">{inst.trading_mode === 'sim' ? '1.2M x' : (inst.data_latency_ms || 0).toFixed(0) + 'ms'}</span></div>
             </div>
             <button onClick={() => setShowManual(true)} className="flex items-center gap-1.5 px-3 py-1 border border-emerald-900/30 hover:bg-emerald-500/10 transition-all text-slate-500 hover:text-emerald-400 group ml-4 outline-none"><HelpCircle className="w-3 h-3" /><span className="text-sm uppercase font-bold tracking-[0.2em]">Manual</span></button>
           </div>
@@ -402,7 +629,15 @@ export default function MissionControl() {
           </Panel>
 
           <Panel title="Ranking Ladder" icon={TrendingUp} className="col-span-4 h-full overflow-hidden flex flex-col">
-             <RankingGrid ladder={globalData.rankings?.ladder} onSelectTicker={handleSelectTicker} filterSector={selectedSector} onClearFilter={() => setSelectedSector(null)} />
+             <RankingGrid 
+                ladder={globalData.rankings?.ladder} 
+                onSelectTicker={handleSelectTicker} 
+                filterSector={selectedSector} 
+                onClearFilter={() => setSelectedSector(null)} 
+                tickerOrder={tickerOrder}
+                sensors={sensors}
+                handleDragEnd={handleDragEnd}
+             />
              <div className="flex-1 border-t border-slate-800 mt-4 pt-4 overflow-y-auto no-scrollbar">
                 <div className="text-sm text-slate-500 mb-2 uppercase font-black tracking-widest flex justify-between items-center"><span>Sector Matrix (Interactive)</span><Filter className="w-3 h-3 text-slate-700" /></div>
                 <div className="grid grid-cols-3 gap-1.5 pb-4">
@@ -441,11 +676,14 @@ export default function MissionControl() {
                 </div>
                 <div className="bg-black/50 p-2 h-64 overflow-y-auto no-scrollbar font-mono text-sm border border-slate-800 shadow-inner">
                     {(inst.order_log || []).map((log, i) => (
-                        <div key={i} className="flex justify-between border-b border-slate-900 pb-1.5 mb-1.5 hover:bg-emerald-500/5 transition-colors">
-                            <span className="text-slate-600">{log.time}</span>
-                            <span className={log.side === 'BUY' ? 'text-emerald-500 font-bold' : 'text-rose-500 font-bold'}>{log.side + " " + log.ticker}</span>
-                            <span className="text-slate-500 px-2">QTY: {log.qty}</span>
-                            <span className={`font-black uppercase tracking-tighter ${log.status === 'FILLED' ? 'text-emerald-400' : log.status === 'REJECTED' ? 'text-red-600' : 'text-amber-400 animate-pulse'}`}>{(log.status || "PENDING")}</span>
+                        <div key={i} className="flex justify-between items-center border-b border-slate-900 pb-1.5 mb-1.5 hover:bg-emerald-500/5 transition-colors text-[11px]">
+                            <span className="text-slate-600 w-24 shrink-0">{log.time}</span>
+                            <span className={`font-bold w-20 ${log.side === 'BUY' ? 'text-emerald-500' : log.side === 'SELL' ? 'text-rose-500' : log.side === 'SHORT' ? 'text-amber-600' : 'text-cyan-600'}`}>{log.side + " " + log.ticker}</span>
+                            <div className="flex flex-col items-end flex-1 pr-4">
+                                <span className="text-slate-500 uppercase text-[9px] font-bold">QTY: {log.qty}</span>
+                                <span className="text-emerald-600/80 text-[10px] font-black">${(log.notional || 0).toLocaleString(undefined, {minimumFractionDigits: 2})}</span>
+                            </div>
+                            <span className={`font-black uppercase tracking-tighter w-16 text-right ${log.status === 'FILLED' ? 'text-emerald-400' : log.status === 'REJECTED' ? 'text-red-600' : 'text-amber-400 animate-pulse'}`}>{(log.status || "PENDING")}</span>
                         </div>
                     ))}
                     {(!inst.order_log || inst.order_log.length === 0) && <div className="h-full flex items-center justify-center text-slate-800 italic uppercase tracking-[0.3em] animate-pulse text-sm">Awaiting execution commands...</div>}

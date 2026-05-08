@@ -45,13 +45,21 @@ class BayesianMetaController:
             self.correlation_history.pop(0)
         
         # 2. Likelihood Function
-        # Refined: Probability of seeing this correlation if the model is 'Valid'
-        likelihood_valid = 1 / (1 + np.exp(-5 * (correlation - 0.01)))
+        # HORIZON MISMATCH FIX: We are validating a 5-day horizon model using 1-day noisy returns.
+        # 1-day returns are often mean-reverting and negatively correlated to 5-day trends.
+        # We expand the rolling average to 10 days to capture the true trend.
+        recent_corr = np.mean(self.correlation_history[-10:]) if self.correlation_history else 0.0
         
-        # 3. Bayes Rule with Learning Rate (Smoothing)
-        target_belief = likelihood_valid
-        alpha = 0.1
-        self.belief = (1 - alpha) * self.belief + alpha * target_belief
+        # We heavily dampen the sigmoid multiplier (from 5.0 to 2.0). 
+        # This means a 15% correlation gives a ~57% likelihood, requiring sustained 
+        # performance over a few days to build belief, and preventing instant crashes on noise.
+        likelihood_valid = 1 / (1 + np.exp(-2.0 * recent_corr))
+        likelihood_invalid = 1 - likelihood_valid
+        
+        # 3. Strict Bayesian Update
+        marginal = (likelihood_valid * self.belief) + (likelihood_invalid * (1 - self.belief))
+        if marginal > 0:
+            self.belief = (likelihood_valid * self.belief) / marginal
         
         # 4. Confidence Floor
         self.belief = max(0.05, min(0.95, self.belief))

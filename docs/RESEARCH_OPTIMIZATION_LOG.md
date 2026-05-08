@@ -104,3 +104,19 @@ Given the exceptionally high IC (0.19), a dedicated **Anti-Leakage Audit** was c
 *   **Finding**: Average MI recorded at **0.0559**. 
     *   *Interpretation:* This is within the "Healthy Signal" bounds ($0.001 < \text{MI} < 0.1$). 
     *   *Result:* This proves the model has a non-trivial predictive edge that is mathematically distinct from the labels, confirming a robust signal-to-noise ratio.
+
+## 9. V3 Institutional Flagship Roadmap
+
+While V2 represents a highly robust, market-neutral Alpha engine, the following upgrades are slated for the V3 production release to extract maximum capital efficiency and safety:
+
+### Priority 1: Hard Stop-Losses (Risk Management)
+*   **Current State**: Execution relies purely on "Conviction Reversals" (waiting for the Alpha score to cross zero).
+*   **Upgrade**: Implement a hard Trailing Stop-Loss (e.g., -5%) in the `InferenceWorker` to protect against Black Swan events and flash crashes, severing positions immediately without waiting for the next 15-minute neural inference pass.
+
+### Priority 2: Dynamic Fractional Differentiation (Signal Processing)
+*   **Current State**: A global $d$-parameter of `0.4` is applied across the entire universe to achieve stationarity.
+*   **Upgrade**: Calculate the exact Hurst Exponent for each individual stock. Highly volatile assets (e.g., NVDA) may receive $d=0.55$, while stable assets (e.g., JNJ) receive $d=0.30$. This perfectly tunes the signal-to-noise ratio per ticker, maximizing memory retention.
+
+### Priority 3: Deep Architecture Scaling (Capacity)
+*   **Current State**: The model is highly optimized (`hidden_dim: 64`, `vit_heads: 4`) for rapid local training on 2.2 million rows of intraday data.
+*   **Upgrade**: Scale the architecture (`hidden_dim: 256`, `vit_heads: 8`, `gnn_layers: 4`) and deploy training to cloud GPUs. This "brute force" scaling will allow the network to map vastly more complex, non-linear interactions between the Wavelet and Graph modalities.

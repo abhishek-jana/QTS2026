@@ -7,7 +7,7 @@ data_engine:
   storage_path: data/uqts_v2_intraday.ddb
   timeframe: 15Min
 execution_muscle:
-  max_position_size: 0.05
+  max_position_size: 0.15
   min_belief_threshold: 0.65
   mpc_solver:
     horizon: 5
@@ -17,9 +17,9 @@ execution_muscle:
     base_url: https://paper-api.alpaca.markets
   safety_limits:
     kill_switch_enabled: true
-    max_notional_per_order: 10000.0
-    max_total_leverage: 2.5
-  trading_mode: paper
+    max_notional_per_order: 50000.0
+    max_total_leverage: 3.0
+  trading_mode: sim
 model_pipeline:
   architecture:
     gnn_layers: 2
@@ -36,11 +36,11 @@ model_pipeline:
     weight_decay: 0.0001
   training_dataset_path: data/train_dataset_v2_full.pt
 risk_metacontroller:
-  prior_belief: 0.75
+  prior_belief: 0.5
 signal_physics:
   fractional_differentiation:
     d_param: 0.4
-  horizon_days: 21
+  horizon_days: 5
   lookback_days: 63
   math_padding: 250
   wavelet_transform:
