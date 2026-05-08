@@ -168,9 +168,11 @@ class InferenceWorker:
             cwt_matrix = batch.data['x_spatial'][idx].squeeze().cpu().numpy()
             pit_view = self.data_engine.get_pit_view(ticker, self.current_knowledge_time)
             if pit_view.empty: return None
-            # SENIOR FIX: Increase lookback from 100 to 100,000 to support 10+ years of history
-            recent = pit_view.tail(100000)
+            # SENIOR FIX: Set lookback to 75,000 bars (covers 10+ years of 15-min history)
+            # This ensures WebSocket payloads stay under ~10MB for stability
+            recent = pit_view.tail(75000)
             if not isinstance(recent.index, pd.DatetimeIndex): recent.index = pd.to_datetime(recent.index)
+            
             history = [{"time": int(t.timestamp()), "open": float(row['open']), "high": float(row['high']), 
                         "low": float(row['low']), "close": float(row['close'])} for t, row in recent.iterrows()]
             
@@ -200,6 +202,18 @@ class InferenceWorker:
         except: pass
         return 0.0
 
+    def _get_market_regime(self, current_time):
+        """Determines if the broader market is in a bullish regime (SPY 21-day momentum)."""
+        try:
+            p_now_view = self.data_engine.get_pit_view('SPY', current_time)
+            p_past_view = self.data_engine.get_pit_view('SPY', current_time - timedelta(days=21))
+            if not p_now_view.empty and not p_past_view.empty:
+                p_now = float(p_now_view['close'].iloc[-1])
+                p_past = float(p_past_view['close'].iloc[-1])
+                return "BULL" if p_now > p_past else "BEAR"
+        except: pass
+        return "BULL" # Default to permissive
+
     def _update_oms_sim(self, house_view, belief):
         """Simulates realistic institutional order sizing if in sim mode based strictly on model conviction."""
         if self.trading_mode != 'sim': return
@@ -207,51 +221,84 @@ class InferenceWorker:
         limits = self.config['execution_muscle']
         threshold = limits.get('min_belief_threshold', 0.65)
         
-        # Calculate active deciles
-        decile_size = max(1, len(house_view['ladder']) // 10)
+        # Hysteresis and Regime Logic
+        total_tickers = len(house_view['ladder'])
+        entry_size = max(1, total_tickers // 10) # 10% entry (Top 6)
+        hold_size = max(1, int(total_tickers * 0.15)) # 15% hold (Top 9) - Tightened from 30%
+        
+        regime = self._get_market_regime(self.current_knowledge_time)
+        allow_shorts = (regime == "BEAR")
         
         # If belief is low, we shouldn't hold any positions (go to cash)
         if belief > threshold and house_view['ladder']:
-            top_tickers = [e['ticker'] for e in house_view['ladder'][:decile_size]]
-            bottom_tickers = [e['ticker'] for e in house_view['ladder'][-decile_size:]]
-        else:
-            top_tickers = []
-            bottom_tickers = []
+            top_entry_tickers = [e['ticker'] for e in house_view['ladder'][:entry_size]]
+            bottom_entry_tickers = [e['ticker'] for e in house_view['ladder'][-entry_size:]] if allow_shorts else []
             
-        # 1. Entry Logic: Only enter if high conviction
+            top_hold_tickers = [e['ticker'] for e in house_view['ladder'][:hold_size]]
+            bottom_hold_tickers = [e['ticker'] for e in house_view['ladder'][-hold_size:]]
+        else:
+            top_entry_tickers, bottom_entry_tickers = [], []
+            top_hold_tickers, bottom_hold_tickers = [], []
+            
+        # 1. Entry Logic: Only enter if conviction meets threshold
         if belief > threshold and house_view['ladder']:
-            trade_intents = [(t, "BUY") for t in top_tickers] + [(t, "SELL") for t in bottom_tickers]
+            # REGIME-LEVERAGED CALCULATION (STABILIZED)
+            unrealized_pnl = 0.0
+            for t, qty in self.sim_positions.items():
+                curr_p = self._get_latest_price_sim(t) or self.sim_avg_costs.get(t, 0)
+                entry_p = self.sim_avg_costs.get(t, 0)
+                unrealized_pnl += (curr_p - entry_p) * qty if qty > 0 else (entry_p - curr_p) * abs(qty)
+            
+            nlv = self.starting_capital + self.sim_realized_pnl + unrealized_pnl
+            
+            # Use a FIXED divisor (10 slots) to prevent doubling when regimes flip
+            leverage = min(1.5, belief * 1.2)
+            target_total_notional = nlv * leverage
+            notional_per_slot = target_total_notional / 10 # Standardized to 10% slots
+            
+            trade_intents = [(t, "BUY") for t in top_entry_tickers] + [(t, "SHORT") for t in bottom_entry_tickers]
             
             for ticker, intent in trade_intents:
                 is_working = any(o['ticker'] == ticker and o['status'] == 'WORKING' for o in self.order_log)
+                price = self._get_latest_price_sim(ticker)
+                
+                # A. NEW ENTRY
                 if ticker not in self.sim_positions and not is_working:
-                    price = self._get_latest_price_sim(ticker)
                     if price > 0:
-                        max_pos_pct = limits.get('max_position_size', 0.05)
-                        target_notional = self.starting_capital * max_pos_pct
+                        target_notional = notional_per_slot
                         
-                        # Strict buying power check for longs (subtracting pending orders to avoid negative cash)
+                        # MARGIN SAFETY: Only 50% of short proceeds help buy longs
+                        pending_cash_out = sum(o['notional'] for o in self.order_log if o['status'] == 'WORKING' and o['side'] == 'BUY')
+                        available_for_long = self.sim_cash - pending_cash_out
                         if intent == "BUY":
-                            pending_cash = sum(o['notional'] for o in self.order_log if o['status'] == 'WORKING' and o['side'] == 'BUY')
-                            available_cash = self.sim_cash - pending_cash
-                            target_notional = min(target_notional, available_cash * 0.95)
+                            target_notional = min(target_notional, available_for_long * 0.90)
                             
                         qty = int(target_notional / price)
                         if qty > 0:
-                            notional = qty * price
                             self.oms_queue["working"] += 1
-                            display_side = "BUY" if intent == "BUY" else "SHORT"
                             self.order_log.append({
                                 "time": self.current_knowledge_time.strftime("%m/%d %H:%M"),
-                                "ticker": ticker,
-                                "side": display_side,
-                                "qty": qty,
-                                "price": price,
-                                "notional": notional,
-                                "status": "WORKING"
+                                "ticker": ticker, "side": intent, "qty": qty, "price": price, 
+                                "notional": qty * price, "status": "WORKING"
+                            })
+                
+                # B. DYNAMIC TRIMMING (Anti-Leverage Creep)
+                elif ticker in self.sim_positions and not is_working:
+                    current_qty = self.sim_positions[ticker]
+                    current_notional = abs(current_qty * price)
+                    # If position is 25% larger than it should be, trim it
+                    if current_notional > (notional_per_slot * 1.25):
+                        trim_qty = int((current_notional - notional_per_slot) / price)
+                        if trim_qty > 0:
+                            self.oms_queue["working"] += 1
+                            side = "SELL" if current_qty > 0 else "COVER"
+                            self.order_log.append({
+                                "time": self.current_knowledge_time.strftime("%m/%d %H:%M"),
+                                "ticker": ticker, "side": side, "qty": trim_qty, "price": price,
+                                "notional": trim_qty * price, "status": "WORKING"
                             })
 
-        # 2. Exit Logic: Close positions if they fall out of their decile or thesis reverses
+        # 2. Exit Logic: Close positions if they fall out of their decile
         active_tickers = list(self.sim_positions.keys())
         for ticker in active_tickers:
             is_working = any(o['ticker'] == ticker and o['status'] == 'WORKING' for o in self.order_log)
@@ -259,10 +306,10 @@ class InferenceWorker:
             
             qty = self.sim_positions[ticker]
             
-            # Close Long if it drops out of the top decile, Close Short if it drops out of the bottom decile
+            # SENIOR FIX: Hysteresis. Close Long if out of Top 15%. Close Short if out of Bottom 15% OR if shorts disabled in Bull regime.
             should_close = False
-            if qty > 0 and ticker not in top_tickers: should_close = True
-            if qty < 0 and ticker not in bottom_tickers: should_close = True
+            if qty > 0 and ticker not in top_hold_tickers: should_close = True
+            if qty < 0 and (ticker not in bottom_hold_tickers or not allow_shorts): should_close = True
             
             if should_close:
                 price = self._get_latest_price_sim(ticker)
@@ -295,35 +342,48 @@ class InferenceWorker:
                         ticker = order['ticker']
                         impact = order['notional']
                         
-                        # LEDGER V2: Accurate Realized P&L Calculation
+                        # LEDGER V3: Robust Realized P&L + Partial Reduction (Trimming)
                         if ticker in self.sim_positions:
-                            # Closing/Reducing Position
                             is_long = self.sim_positions[ticker] > 0
                             entry_p = self.sim_avg_costs[ticker]
                             exit_p = order['price']
-                            exit_qty = order['qty']
+                            exec_qty = order['qty']
                             
                             # P&L calculation
-                            pnl = (exit_p - entry_p) * exit_qty if is_long else (entry_p - exit_p) * exit_qty
+                            pnl = (exit_p - entry_p) * exec_qty if is_long else (entry_p - exit_p) * exec_qty
                             self.sim_realized_pnl += pnl
                             
                             # Cash Update
                             if is_long: self.sim_cash += impact
-                            else: self.sim_cash -= impact # Buy back cost
+                            else: self.sim_cash -= impact 
                             
-                            del self.sim_positions[ticker]
-                            del self.sim_avg_costs[ticker]
+                            # Update Quantity (Partial or Full)
+                            if is_long: self.sim_positions[ticker] -= exec_qty
+                            else: self.sim_positions[ticker] += exec_qty
+                            
+                            # Clean up if position is now zero (or dust)
+                            if abs(self.sim_positions[ticker]) < 1:
+                                del self.sim_positions[ticker]
+                                del self.sim_avg_costs[ticker]
                         else:
                             # New Position Entry
-                            if order['side'] == 'BUY': 
+                            if order['side'] in ['BUY', 'COVER']: 
                                 self.sim_cash -= impact
                                 self.sim_positions[ticker] = order['qty']
-                            else: # SHORT ENTRY
+                            else: # SHORT or SELL (if opening short)
                                 self.sim_cash += impact # Get proceeds
                                 self.sim_positions[ticker] = -order['qty']
                             self.sim_avg_costs[ticker] = order['price']
         
-        if len(self.order_log) > 15: self.order_log.pop(0)
+        # SENIOR FIX: Only pop orders that are NOT currently 'WORKING'
+        while len(self.order_log) > 20:
+            popped = False
+            for i, o in enumerate(self.order_log):
+                if o['status'] != 'WORKING':
+                    self.order_log.pop(i)
+                    popped = True
+                    break
+            if not popped: break
 
     async def run(self):
         logger.info(f"INFERENCE WORKER: LOOP STARTED ({self.trading_mode})")
@@ -443,43 +503,59 @@ class InferenceWorker:
                     if self.market_open:
                         threshold = self.config['execution_muscle']['min_belief_threshold']
                         
-                        # Calculate active deciles
-                        decile_size = max(1, len(house_view['ladder']) // 10)
+                        # Hysteresis and Regime Logic
+                        total_tickers = len(house_view['ladder'])
+                        entry_size = max(1, total_tickers // 10) # 10% entry
+                        hold_size = max(1, int(total_tickers * 0.30)) # 30% hold
+                        
+                        regime = self._get_market_regime(self.current_knowledge_time)
+                        allow_shorts = (regime == "BEAR")
                         
                         if belief > threshold and house_view['ladder']:
-                            top_tickers = [e['ticker'] for e in house_view['ladder'][:decile_size]]
-                            bottom_tickers = [e['ticker'] for e in house_view['ladder'][-decile_size:]]
+                            top_entry_tickers = [e['ticker'] for e in house_view['ladder'][:entry_size]]
+                            bottom_entry_tickers = [e['ticker'] for e in house_view['ladder'][-entry_size:]] if allow_shorts else []
+                            
+                            top_hold_tickers = [e['ticker'] for e in house_view['ladder'][:hold_size]]
+                            bottom_hold_tickers = [e['ticker'] for e in house_view['ladder'][-hold_size:]]
                         else:
-                            top_tickers = []
-                            bottom_tickers = []
+                            top_entry_tickers, bottom_entry_tickers = [], []
+                            top_hold_tickers, bottom_hold_tickers = [], []
                             
                         # 1. Entry Logic: Only enter if high conviction
                         if belief > threshold and house_view['ladder']:
-                            trade_intents = [(t, "BUY") for t in top_tickers] + [(t, "SELL") for t in bottom_tickers]
+                            # REGIME-LEVERAGED LIVE (FIXED)
+                            leverage = min(1.5, belief * 1.2)
+                            target_total_notional = self.starting_capital * leverage
                             
+                            trade_intents = [(t, "BUY") for t in top_entry_tickers] + [(t, "SELL") for t in bottom_entry_tickers]
+                            n_slots = len(trade_intents) if trade_intents else 1
+                            notional_per_slot = target_total_notional / n_slots
+
                             for ticker, intent in trade_intents:
                                 if ticker not in self.live_bot.positions and ticker not in self.pending_orders:
                                     price = self.live_prices.get(ticker, 0.0)
-                                    qty = self.live_bot.calculate_order_qty(ticker, price)
-                                    if qty > 0:
-                                        logger.info(f"Execution: Submitting dynamic {intent} order for {ticker} (Qty: {qty})")
-                                        self.live_bot.submit_order(ticker, intent, qty)
-                                        self.pending_orders.add(ticker)
+                                    if price > 0:
+                                        # Use the calculated regime-based notional instead of a fixed config pct
+                                        qty = int(notional_per_slot / price)
+                                        if qty > 0:
+                                            logger.info(f"Execution: Submitting REGIME-LEVERAGED {intent} order for {ticker} (Qty: {qty}, Lev: {leverage:.2f}x)")
+                                            self.live_bot.submit_order(ticker, intent, qty)
+                                            self.pending_orders.add(ticker)
 
-                        # 2. Exit Logic: Close positions if they fall out of their decile or thesis reverses
+                        # 2. Exit Logic: Close positions if they fall out of their hold decile or thesis reverses
                         active_tickers = list(self.live_bot.positions.keys())
                         for ticker in active_tickers:
                             if ticker in self.pending_orders: continue # Wait for pending orders to settle
                             
                             qty = self.live_bot.positions[ticker]
                             
-                            # Close Long if it drops out of the top decile, Close Short if it drops out of the bottom decile
+                            # SENIOR FIX: Hysteresis. Close Long if out of Top 30%. Close Short if out of Bottom 30% OR if shorts disabled in Bull regime.
                             should_close = False
-                            if qty > 0 and ticker not in top_tickers: should_close = True
-                            if qty < 0 and ticker not in bottom_tickers: should_close = True
+                            if qty > 0 and ticker not in top_hold_tickers: should_close = True
+                            if qty < 0 and (ticker not in bottom_hold_tickers or not allow_shorts): should_close = True
                             
                             if should_close:
-                                logger.info(f"Execution: Closing position for {ticker} due to decile/thesis change.")
+                                logger.info(f"Execution: Closing position for {ticker} due to hysteresis/regime change.")
                                 exit_intent = "SELL" if qty > 0 else "BUY"
                                 self.live_bot.submit_order(ticker, exit_intent, abs(int(qty)))
                                 self.pending_orders.add(ticker)
@@ -615,7 +691,16 @@ class InferenceWorker:
 
             if self.trading_mode == 'sim':
                 self.current_knowledge_time += timedelta(days=1)
-                if self.current_knowledge_time > datetime.now(): self.current_knowledge_time = datetime(2023, 1, 1)
+                # RESET LEDGER ON LOOP
+                if self.current_knowledge_time > datetime.now(): 
+                    logger.warning("INFERENCE WORKER: Simulation Loop Reset. Clearing Ledger.")
+                    self.current_knowledge_time = datetime(2023, 1, 1)
+                    self.sim_cash = 100000.0
+                    self.sim_positions = {}
+                    self.sim_avg_costs = {}
+                    self.sim_realized_pnl = 0.0
+                    self.order_log = []
+                    self.oms_queue = {"filled": 0, "working": 0, "rejected": 0}
             
             await asyncio.sleep(self.update_interval)
 

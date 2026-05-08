@@ -83,6 +83,52 @@ const PriceChart = ({ data, ticker }) => {
     { label: 'ALL', value: null }
   ];
 
+  // SENIOR FIX: Memoize cleaned data to ensure consistency across range calculations and rendering
+  const cleanData = React.useMemo(() => {
+    if (!data || data.length === 0) return [];
+    const seen = new Set();
+    return data
+      .filter(d => {
+          if (seen.has(d.time)) return false;
+          seen.add(d.time);
+          return true;
+      })
+      .sort((a, b) => a.time - b.time);
+  }, [data]);
+
+  // SENIOR FIX: Calculate performance for the selected range with robust boundary detection
+  const rangePerformance = React.useMemo(() => {
+    if (cleanData.length < 2) return null;
+    
+    let firstPrice, lastPrice;
+    const latest = cleanData[cleanData.length - 1];
+    lastPrice = latest.close;
+
+    if (selectedRangeLabel === 'ALL') {
+      firstPrice = cleanData[0].close;
+      return {
+        pct: ((lastPrice / firstPrice) - 1) * 100,
+        label: `ALL (Since ${new Date(cleanData[0].time * 1000).toLocaleDateString()})`
+      };
+    } else {
+      const range = ranges.find(r => r.label === selectedRangeLabel);
+      if (!range || !range.value) return null;
+      const startTime = latest.time - range.value;
+      
+      // Find the first bar within or closest to the range start
+      const firstBar = cleanData.find(d => d.time >= startTime);
+      if (!firstBar) return null;
+      firstPrice = firstBar.close;
+
+      const isDataTruncated = firstBar.time > startTime + (24 * 3600); // More than 1 day difference
+      
+      return {
+        pct: ((lastPrice / firstPrice) - 1) * 100,
+        label: `${selectedRangeLabel}${isDataTruncated ? '*' : ''}`
+      };
+    }
+  }, [cleanData, selectedRangeLabel]);
+
   const applyRange = (rangeLabel, chartData) => {
     if (!chartRef.current || !chartData || chartData.length === 0) return;
     
@@ -100,7 +146,7 @@ const PriceChart = ({ data, ticker }) => {
 
   const handleRangeChange = (range) => {
     setSelectedRangeLabel(range.label);
-    applyRange(range.label, data);
+    applyRange(range.label, cleanData);
   };
 
   useEffect(() => {
@@ -140,35 +186,31 @@ const PriceChart = ({ data, ticker }) => {
 
   // Handle data updates separately from initialization
   useEffect(() => {
-    if (seriesRef.current && data && data.length > 0) {
-      const seen = new Set();
-      const cleanData = data
-        .filter(d => {
-            if (seen.has(d.time)) return false;
-            seen.add(d.time);
-            return true;
-        })
-        .sort((a, b) => a.time - b.time);
+    if (seriesRef.current && cleanData.length > 0) {
+      seriesRef.current.setData(cleanData);
       
-      if (cleanData.length > 0) {
-        seriesRef.current.setData(cleanData);
-        
-        if (!hasInitialized) {
-          chartRef.current.timeScale().fitContent();
-          setHasInitialized(true);
-        } else if (selectedRangeLabel !== 'ALL') {
-          // Re-apply range to stick to the right edge with user's zoom
-          applyRange(selectedRangeLabel, cleanData);
-        }
+      if (!hasInitialized) {
+        chartRef.current.timeScale().fitContent();
+        setHasInitialized(true);
+      } else if (selectedRangeLabel !== 'ALL') {
+        // Re-apply range to stick to the right edge with user's zoom
+        applyRange(selectedRangeLabel, cleanData);
       }
     }
-  }, [data]); // Only re-run on data change
+  }, [cleanData, hasInitialized, selectedRangeLabel]); 
 
   return (
     <div className="w-full flex flex-col gap-1">
       <div className="flex justify-between items-center mb-1">
-        <div className="text-lg font-mono text-emerald-500 uppercase font-bold tracking-tighter">
-          {ticker} LIVE FEED (SIP_STREAM)
+        <div className="flex items-center gap-3">
+          <div className="text-lg font-mono text-emerald-500 uppercase font-bold tracking-tighter">
+            {ticker} LIVE FEED
+          </div>
+          {rangePerformance !== null && (
+            <div className={`text-xs font-black px-1.5 py-0.5 rounded-sm border ${rangePerformance.pct >= 0 ? 'text-emerald-400 border-emerald-900/50 bg-emerald-950/20' : 'text-rose-500 border-rose-900/50 bg-rose-950/20'}`}>
+              {rangePerformance.label}: {rangePerformance.pct >= 0 ? '+' : ''}{rangePerformance.pct.toFixed(2)}%
+            </div>
+          )}
         </div>
         <div className="flex gap-1">
           {ranges.map(r => (

@@ -27,5 +27,11 @@ While V2 captured the "Super-Liquidity" sweet spot across a 60-ticker universe, 
 3. **Refine Wavelet Scales (`config.yaml`)**: Adjust `scales` array to capture the new intraday frequencies.
 4. **Implement GNN Mask (`core_plugins.py`)**: Inject sector classification data into the `x_graph` transformation.
 
+## Recommended Execution Strategy
+Based on 2026 backtests, V3 should be deployed using the **Logic V3: High-Octane** regime:
+- **Leverage**: 2.0x Fixed.
+- **Concentration**: Top 10% of expanded universe (e.g., Top 10 for 100 stocks).
+- **Risk Control**: Bayesian Belief (Metacognition) acting as an automated 0.15 threshold Kill-Switch.
+
 ---
 **Status:** Approved Roadmap - On Deck for Post-V1 Deployment.

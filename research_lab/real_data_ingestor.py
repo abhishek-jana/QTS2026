@@ -29,14 +29,23 @@ class InstitutionalIngestor:
 
     def ingest_universe(self, tickers: list, start_date: str, end_date: str):
         try:
-            existing = [t[0] for t in self.engine.conn.execute("SELECT DISTINCT ticker FROM market_data").fetchall()]
-            missing = [t for t in tickers if t not in existing]
+            # SENIOR FIX: Check not just ticker existence, but also if we have the requested date range
+            # This prevents gaps when a previous run only fetched a partial range.
+            requested_start = pd.to_datetime(start_date)
+            missing = []
+            for ticker in tickers:
+                res = self.engine.conn.execute(f"SELECT MIN(event_time) FROM market_data WHERE ticker = '{ticker}'").fetchone()
+                if not res or res[0] is None or res[0] > requested_start:
+                    missing.append(ticker)
+            
             if not missing:
-                logger.info("✅ ALL TICKERS PRESENT: Skipping ingestion.")
+                logger.info("✅ ALL TICKERS IN RANGE: Skipping ingestion.")
                 return
-        except Exception: missing = tickers
+        except Exception as e: 
+            logger.warning(f"Ingestion check failed ({e}), defaulting to full fetch.")
+            missing = tickers
 
-        logger.info(f"📡 Alpaca Ingestion: Fetching {len(missing)} tickers...")
+        logger.info(f"📡 Alpaca Ingestion: Fetching {len(missing)} tickers from {start_date}...")
         
         # SENIOR DEV FIX: Rebuild headers from current attributes to support dynamic injection
         api_key = getattr(self, 'alpaca_api_key', self.api_key)

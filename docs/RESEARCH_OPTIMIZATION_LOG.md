@@ -120,3 +120,20 @@ While V2 represents a highly robust, market-neutral Alpha engine, the following 
 ### Priority 3: Deep Architecture Scaling (Capacity)
 *   **Current State**: The model is highly optimized (`hidden_dim: 64`, `vit_heads: 4`) for rapid local training on 2.2 million rows of intraday data.
 *   **Upgrade**: Scale the architecture (`hidden_dim: 256`, `vit_heads: 8`, `gnn_layers: 4`) and deploy training to cloud GPUs. This "brute force" scaling will allow the network to map vastly more complex, non-linear interactions between the Wavelet and Graph modalities.
+
+## 10. Execution Regime Evolution (2023-2026)
+
+In May 2026, a series of production-grade simulations were conducted to determine the optimal execution parameters for the Challenger V2 model (IC 0.19).
+
+### Logic V2: Unleashed (Baseline)
+*   **Strategy**: Long-Only, Top 10 Concentration, 1.5x Leverage Cap.
+*   **Risk**: Bayesian Threshold at 0.30 (Dampened sensitivity).
+*   **Outcome**: **+64.62%** Total Return.
+*   **Key Finding**: Moving to Long-Only and relaxing the Bayesian "paranoia" allowed the model to finally capture the 2024-2025 rallies.
+
+### Logic V3: High-Octane (Flagship)
+*   **Strategy**: Long-Only, Top 5 Concentration, **2.0x Fixed Leverage**.
+*   **Risk**: Bayesian Threshold at 0.15 (Extreme persistence).
+*   **Outcome**: **+223.81%** Total Return.
+*   **Final NLV**: $323,806.30 (from $100k starting capital).
+*   **Key Finding**: The model's exceptional IC (0.20) acts as a force multiplier when concentrated. High concentration in Top 5 picks prevents Alpha dilution, while 2.0x leverage converts the high win rate into exponential compounding. The Bayesian layer successfully triggered a full liquidation in April 2026, preserving the 200%+ gain before a regime reversal.

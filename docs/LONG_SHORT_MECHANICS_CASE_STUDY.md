@@ -34,3 +34,17 @@ While the P&L in this scenario was highly positive, the **Metacognition** panel 
 
 ## Conclusion
 This scenario perfectly illustrates the intended behavior of the UQTS-2026 platform. The neural engine successfully predicted a sector-specific downturn and capitalized on it via heavy Short exposure. Simultaneously, the Bayesian Metacognition layer recognized the impending end of that regime and automatically engaged the system's brakes (via OMS rejections) to lock in profits and reduce risk.
+
+## Evolution: From Market-Neutral to High-Octane Long-Only (2026 Update)
+
+While the Long/Short mechanics described above are robust for capital preservation, 2023-2026 backtests revealed that the Challenger V2 model's high IC (~0.20) was most efficiently harvested using a **High-Octane Long-Only** approach.
+
+### The High-Octane Shift
+- **Concentration**: Reduced from a broad market-neutral basket to the **Top 5 highest-conviction stocks**.
+- **Leverage**: Increased to **2.0x Fixed Leverage** (utilizing Reg-T margin).
+- **Result**: Achieved **+223.81%** return, compared to the market-neutral version which struggled with "Bear Traps" during momentum-driven tech rallies.
+
+### The Role of Metacognition in High-Octane
+In the High-Octane regime, the Bayesian Belief score shifts from a "position scaler" to an **"Emergency Kill-Switch."** 
+- **Persistence**: The threshold is lowered to **0.15**, allowing the portfolio to remain 2.0x leveraged through normal market pullbacks.
+- **Liquidation**: If the belief score drops below 0.15 (as seen in April 2026), the entire 2.0x portfolio is liquidated to cash immediately. This "All-or-Nothing" risk profile maximizes upside while utilizing the Bayesian layer to prevent catastrophic drawdown during true regime collapses.
