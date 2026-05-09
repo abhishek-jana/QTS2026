@@ -70,11 +70,21 @@ class RankNet(nn.Module):
                 for b in range(nb):
                     optimizer.zero_grad(); idx = indices[b*abs_ : (b+1)*abs_]
                     if len(idx) < 2: continue
-                    yb = dataset.labels[idx]; ii, jj = torch.randperm(len(idx), device=device), torch.randperm(len(idx), device=device)
+                    
+                    yb = dataset.labels[idx]
+                    wb = dataset.sample_weights[idx] if hasattr(dataset, 'sample_weights') and dataset.sample_weights is not None else None
+                    
+                    ii, jj = torch.randperm(len(idx), device=device), torch.randperm(len(idx), device=device)
+                    
                     with torch.amp.autocast('cuda', enabled=(device.type == 'cuda')):
                         ini = {k: v[idx][ii] for k, v in dataset.data.items()}; inj = {k: v[idx][jj] for k, v in dataset.data.items()}
                         si, sj = self.forward(ini), self.forward(inj)
-                        loss = criterion(si, sj, torch.sign(yb[ii] - yb[jj]).unsqueeze(1))
+                        
+                        target = torch.sign(yb[ii] - yb[jj]).unsqueeze(1)
+                        pair_weights = (wb[ii] + wb[jj]).unsqueeze(1) / 2.0 if wb is not None else None
+                        
+                        loss = criterion(si, sj, target, weights=pair_weights)
+                        
                     scaler.scale(loss).backward(); scaler.unscale_(optimizer); torch.nn.utils.clip_grad_norm_(self.parameters(), 1.0)
                     scaler.step(optimizer); scaler.update(); tl += loss.item()
                 scheduler.step(); al = tl / max(1, nb); v_loss_val = None
@@ -83,9 +93,16 @@ class RankNet(nn.Module):
                     with torch.no_grad(), torch.amp.autocast('cuda', enabled=(device.type == 'cuda')):
                         v_ns = len(val_dataset.labels); v_idx = torch.randperm(v_ns, device=device)[:min(batch_size, v_ns)]
                         if len(v_idx) >= 2:
+                            v_yb = val_dataset.labels[v_idx]
+                            v_wb = val_dataset.sample_weights[v_idx] if hasattr(val_dataset, 'sample_weights') and val_dataset.sample_weights is not None else None
+                            
                             vii, vjj = torch.randperm(len(v_idx), device=device), torch.randperm(len(v_idx), device=device)
                             v_ini, v_inj = {k: v[v_idx][vii] for k, v in val_dataset.data.items()}, {k: v[v_idx][vjj] for k, v in val_dataset.data.items()}
-                            v_loss_val = criterion(self.forward(v_ini), self.forward(v_inj), torch.sign(val_dataset.labels[v_idx][vii] - val_dataset.labels[v_idx][vjj]).unsqueeze(1)).item()
+                            
+                            v_target = torch.sign(v_yb[vii] - v_yb[vjj]).unsqueeze(1)
+                            v_pair_weights = (v_wb[vii] + v_wb[vjj]).unsqueeze(1) / 2.0 if v_wb is not None else None
+                            
+                            v_loss_val = criterion(self.forward(v_ini), self.forward(v_inj), v_target, weights=v_pair_weights).item()
                     self.train()
                 
                 # SENIOR FIX: Early Stopping on Validation Loss with State Restoration
@@ -173,5 +190,8 @@ class MultiModalRankNet(RankNet):
 
 class PairwiseRankLoss(nn.Module):
     def __init__(self, sigma: float = 1.0): super(PairwiseRankLoss, self).__init__(); self.sigma = sigma
-    def forward(self, s_i, s_j, target):
-        return (-((1 + target) / 2) * self.sigma * (s_i - s_j) + torch.log(1 + torch.exp(self.sigma * (s_i - s_j)))).mean()
+    def forward(self, s_i, s_j, target, weights=None):
+        loss = -((1 + target) / 2) * self.sigma * (s_i - s_j) + torch.log(1 + torch.exp(self.sigma * (s_i - s_j)))
+        if weights is not None:
+            loss = loss * weights
+        return loss.mean()

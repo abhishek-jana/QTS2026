@@ -3,7 +3,7 @@ import torch
 import numpy as np
 import pandas as pd
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional, Protocol
 
 from research_lab.alpha_universe import AlphaUniverse
@@ -178,6 +178,56 @@ class StrategyEngine:
             view["_batch"] = batch
             
         return view
+
+    def get_ticker_diagnostics(self, ticker: str, as_of: datetime) -> Optional[Dict[str, Any]]:
+        """Provides deep spectral insights for a specific ticker for UI visualization."""
+        lookback = self.config.get('signal_physics', {}).get('lookback_days', 63)
+        batch = self.lab.snapshot(as_of=as_of, tickers=[ticker], lookback=lookback)
+        if not batch: return None
+        
+        # 1. Extract History
+        raw_prices = self.lab.get_batch_pit_view([ticker], as_of, start_time=as_of - timedelta(days=lookback))
+        history_ui = []
+        if not raw_prices.empty:
+            for t, row in raw_prices.iterrows():
+                history_ui.append({
+                    "time": int(t.timestamp()),
+                    "open": float(row['open']), "high": float(row['high']),
+                    "low": float(row['low']), "close": float(row['close']), "volume": int(row['volume'])
+                })
+
+        # 2. Extract Wavelet CWT
+        cwt = batch.data.get('x_spatial', torch.zeros(1, 1, 16, lookback))[0, 0].cpu().numpy()
+        
+        # 3. STATISTICAL DIAGNOSTICS (REAL ADF TEST)
+        adf_p = 0.99
+        try:
+            from statsmodels.tsa.stattools import adfuller
+            # Use the fractional differenced or log-return series from the batch
+            # This series is what the model actually sees as stationary
+            series = batch.data['x_seq'][0].squeeze().cpu().numpy()
+            if len(series) > 10:
+                res = adfuller(series, autolag='AIC')
+                adf_p = float(res[1])
+        except Exception as e:
+            logger.warning(f"ADF Test failed for {ticker}: {e}")
+            adf_p = float(torch.std(batch.data['x_seq']).item()) # Fallback proxy
+        
+        # 4. Model weights (SHAP)
+        view = self.get_current_rankings(as_of)
+        shap = {}
+        for entry in view.get('ladder', []):
+            if entry['ticker'] == ticker:
+                shap = entry['shap']
+                break
+        
+        return {
+            "ticker": ticker,
+            "history": history_ui,
+            "cwt": cwt,
+            "adf_p": adf_p,
+            "shap_fusion": shap
+        }
 
     def update_model_metacognition(self, realized_returns: Dict[str, float], predicted_scores: Dict[str, float]):
         """Updates Bayesian MetaController."""

@@ -31,3 +31,15 @@ This document tracks the vertical slices required to elevate the system from a h
 ## 5. End-to-End Production Capital Test (HITL)
 - **Status**: Pending staging environment deployment.
 - **Objective**: Full-stack integration test in Alpaca Paper Environment to ensure system latency, risk limits, and recovery under simulated market stress.
+
+---
+
+## 6. Logic V5: Institutional Guardrails (IN PROGRESS)
+- [ ] **Quadratic Slippage Engine**
+  - Implement 15bps (0.15%) flat commission + market impact scaling in `simulation_engine.py`.
+- [ ] **Volatility Targeting Harness**
+  - Refactor RL Pilot to maintain a constant volatility envelope (e.g., < 25% annualized).
+- [ ] **Monte Carlo "Regime Jitter" Test**
+  - Script to run 1,000 simulations with ±5% daily noise and random crash injections.
+- [ ] **Liquidity Masking**
+  - Use 30-day ADV (Average Daily Volume) to cap maximum position sizes at 1.5% of market depth.

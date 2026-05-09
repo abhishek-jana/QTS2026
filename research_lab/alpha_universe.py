@@ -14,15 +14,21 @@ class MultiModalBatch:
     labels: torch.Tensor
     tickers: List[str]
     times: List[datetime]
+    sample_weights: Optional[torch.Tensor] = None
+    
     def __len__(self): return len(self.labels)
     def __getitem__(self, index):
         if isinstance(index, str): return self.data[index]
         item = {name: tensor[index] for name, tensor in self.data.items()}
         item['y'] = self.labels[index]
+        if self.sample_weights is not None:
+            item['w'] = self.sample_weights[index]
         return item
     def to(self, device: torch.device):
         self.data = {k: v.to(device) for k, v in self.data.items()}
         self.labels = self.labels.to(device)
+        if self.sample_weights is not None:
+            self.sample_weights = self.sample_weights.to(device)
         return self
 
 class AlphaUniverse:
@@ -72,7 +78,7 @@ class AlphaUniverse:
     def __setstate__(self, state):
         self.__dict__.update(state)
 
-    def _get_batch_pit_view(self, tickers: List[str], as_of: datetime, start_time: Optional[datetime] = None) -> pd.DataFrame:
+    def get_batch_pit_view(self, tickers: List[str], as_of: datetime, start_time: Optional[datetime] = None) -> pd.DataFrame:
         ticker_list = "', '".join(tickers)
         standard_cols = ['ticker', 'event_time', 'knowledge_time', 'open', 'high', 'low', 'close', 'volume', 'is_correction']
         col_str = ", ".join(standard_cols)
@@ -109,10 +115,10 @@ class AlphaUniverse:
         
         if 'Min' in self.timeframe:
             fetch_limit = as_of + timedelta(days=horizon + 10) if backtest_mode else as_of
-            batch_view = self._get_batch_pit_view(tickers, fetch_limit, start_time=fetch_start)
+            batch_view = self.get_batch_pit_view(tickers, fetch_limit, start_time=fetch_start)
         else:
             fetch_limit = as_of + timedelta(days=horizon * 2) if backtest_mode else as_of
-            batch_view = self._get_batch_pit_view(tickers, fetch_limit, start_time=fetch_start)
+            batch_view = self.get_batch_pit_view(tickers, fetch_limit, start_time=fetch_start)
             
         if batch_view.empty: return None
         

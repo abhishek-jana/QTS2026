@@ -105,22 +105,53 @@ class BacktestOrchestrator:
                 train_dataset = self._collect_training_data(train_start, train_end)
                 if not using_subset: torch.save(train_dataset, cache_path)
             
-            # AUTOMATIC VALIDATION SELECTION (Relative to train_end)
+            # AUTOMATIC VALIDATION SPLIT (Temporal)
             val_pct = self.config['model_pipeline']['timeframes'].get('validation_split_pct', 0.15)
-            # Find the date that marks the start of the last val_pct of samples
             sorted_times = sorted(train_dataset.times)
             cutoff_idx = int(len(sorted_times) * (1 - val_pct))
             cutoff_date = sorted_times[cutoff_idx]
             
-            logger.info(f"📊 Auto-Validation Cutoff: {cutoff_date.date()} (Last {val_pct*100:.0f}%)")
-            
             train_mask = [t < cutoff_date for t in train_dataset.times]
             val_mask = [t >= cutoff_date for t in train_dataset.times]
-            val_dataset = MultiModalBatch(data={k: v[val_mask] for k, v in train_dataset.data.items()}, labels=train_dataset.labels[val_mask], tickers=['VAL'] * sum(val_mask), times=[t for i, t in enumerate(train_dataset.times) if val_mask[i]])
-            train_dataset = MultiModalBatch(data={k: v[train_mask] for k, v in train_dataset.data.items()}, labels=train_dataset.labels[train_mask], tickers=['TRAIN'] * sum(train_mask), times=[t for i, t in enumerate(train_dataset.times) if train_mask[i]])
             
-            if device.type == 'cuda': logger.info("🚀 MOVING DATASETS TO GPU VRAM..."); train_dataset = train_dataset.to(device); val_dataset = val_dataset.to(device)
-            logger.info(f"🛠️ Training on {len(train_dataset.labels)} samples with {len(val_dataset.labels)} TEMPORAL validation (Late 2022)...")
+            val_dataset = MultiModalBatch(
+                data={k: v[val_mask] for k, v in train_dataset.data.items()}, 
+                labels=train_dataset.labels[val_mask], 
+                tickers=['VAL'] * sum(val_mask), 
+                times=[t for i, t in enumerate(train_dataset.times) if val_mask[i]]
+            )
+            train_dataset = MultiModalBatch(
+                data={k: v[train_mask] for k, v in train_dataset.data.items()}, 
+                labels=train_dataset.labels[train_mask], 
+                tickers=['TRAIN'] * sum(train_mask), 
+                times=[t for i, t in enumerate(train_dataset.times) if train_mask[i]]
+            )
+
+            # --- PROFESSIONAL TEMPORAL DECAY WEIGHTING (Re-Anchored) ---
+            decay_lambda = self.config['model_pipeline']['timeframes'].get('temporal_decay_lambda', 0.0)
+            if decay_lambda > 0:
+                logger.info(f"⚖️ Anchoring Decay Weights to Training End: {cutoff_date.date()}...")
+                # Weight = exp(-lambda * days_from_cutoff)
+                t_weights = []
+                for t in train_dataset.times:
+                    days_diff = (cutoff_date - t).days
+                    t_weights.append(np.exp(-decay_lambda * days_diff))
+                
+                t_weights = np.array(t_weights)
+                # Normalize so average is 1.0 (gradient stability)
+                train_dataset.sample_weights = torch.tensor(t_weights / t_weights.mean()).float()
+                
+                # Validation is UNWEIGHTED (Pure generalization test)
+                val_dataset.sample_weights = None
+            
+            if device.type == 'cuda': 
+                logger.info("🚀 MOVING DATASETS TO GPU VRAM...")
+                train_dataset = train_dataset.to(device)
+                val_dataset = val_dataset.to(device)
+                
+            logger.info(f"📊 Auto-Validation Cutoff: {cutoff_date.date()} (Last {val_pct*100:.0f}%)")
+            logger.info(f"🛠️ Training on {len(train_dataset.labels)} samples with {len(val_dataset.labels)} samples for stress-test ({cutoff_date.date()} -> {train_end.date()})...")
+            
             ep, lr, pat = self.config['model_pipeline']['training']['epochs'], self.config['model_pipeline']['training']['lr'], self.config['model_pipeline']['training'].get('early_stopping_patience', 5)
             logger.info("🏆 Training Champion (MLP)...")
             champion.fit((train_dataset.data['x_spatial'][:, 0, :, -1], train_dataset.labels), epochs=ep, lr=lr, device=device, batch_size=batch_size, patience=pat, weight_decay=wd)
@@ -182,5 +213,23 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="UQTS-2026 Production Backtest Orchestrator")
     parser.add_argument("--ingest", action="store_true"); parser.add_argument("--train", action="store_true"); parser.add_argument("--eval-only", action="store_true"); parser.add_argument("--test-subset", action="store_true")
     args = parser.parse_args(); orchestrator = BacktestOrchestrator(tickers=["SPY", "NVDA", "TSM"] if args.test_subset else None)
+    
     if args.ingest: orchestrator.run_ingestion()
-    if args.train or (not args.ingest and not args.eval_only): orchestrator.run_comparison(datetime(2018, 1, 1), datetime(2022, 12, 31), datetime(2023, 1, 1), datetime.now(), skip_train=args.eval_only)
+    
+    tf = orchestrator.config['model_pipeline']['timeframes']
+    def p(s): return datetime.now() if s == 'now' else datetime.strptime(s, '%Y-%m-%d')
+    
+    if args.train or (not args.ingest and not args.eval_only): 
+        # PRO EXPERT FIX: Strictly isolate training labels from OOS window
+        # Subtract the horizon (21 days) from the training end date
+        # This ensures no label peeks into the 'future' evaluation period
+        horizon_days = orchestrator.config['signal_physics'].get('horizon_days', 21)
+        clean_train_end = p(tf['train_end']) - timedelta(days=horizon_days)
+        
+        logger.info(f"🛡️ ANTI-LEAKAGE: Adjusting train_end to {clean_train_end.date()} (Buffer: {horizon_days} days)")
+        
+        orchestrator.run_comparison(
+            p(tf['train_start']), clean_train_end, 
+            p(tf['test_start']), p(tf['test_end']),
+            skip_train=args.eval_only
+        )

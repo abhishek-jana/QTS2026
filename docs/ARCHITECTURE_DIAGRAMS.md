@@ -28,7 +28,27 @@ graph TD
     G -- JSON Payloads --> H[(Redis: Pub/Sub)]
 ```
 
-## 3. Execution Muscle Pipeline
+## 3. Hierarchical Portfolio Optimization (The "Chef")
+```mermaid
+graph TD
+    subgraph L1: Signal Oracle
+        A[RankNet Ensemble] -- "24 Sensors (Alpha Spread, DD, Vol)" --> B[Sensor Vector]
+    end
+    
+    subgraph L2: RL Pilot
+        B -- Observation --> C[PPO Agent: MLP Policy]
+        C -- Action --> D[Policy: Leverage, Concentration, Hedging]
+    end
+    
+    subgraph Execution
+        D -- Instruction --> E[OMS: Order Management System]
+        E -- FIX/REST --> F[Broker: Alpaca/IBKR]
+        F -- PnL Feedback --> G[Reward Signal: Sortino Ratio]
+        G -- Backprop --> C
+    end
+```
+
+## 4. Execution Muscle Pipeline
 ```mermaid
 graph TD
     A[(Redis: Pub/Sub)] -- Signal Update --> B[PaperBot: Python/Asyncio]
@@ -39,7 +59,7 @@ graph TD
     F -- Fill Updates --> G[Portfolio Reconciler: Asyncio]
 ```
 
-## 4. UI Streaming Layer
+## 5. UI Streaming Layer
 ```mermaid
 graph TD
     A[(Redis: Pub/Sub)] -- Targeted Ticker Data --> B[FastAPI: Streamer]

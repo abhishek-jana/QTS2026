@@ -28,11 +28,12 @@ model_pipeline:
   evaluation_dataset_path: data/oos_steps_v2.pt
   model_path: models/challenger_v2.pt
   timeframes:
-    train_start: '2018-01-01'
-    train_end: '2022-12-31'
-    test_start: '2023-01-01'
+    train_start: '2019-01-01'
+    train_end: '2023-12-31'
+    test_start: '2024-01-01'
     test_end: 'now'
     validation_split_pct: 0.15
+    temporal_decay_lambda: 0.001
   training:
     batch_size: 1024
     dropout: 0.4

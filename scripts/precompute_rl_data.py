@@ -43,9 +43,17 @@ def precompute_rl_data():
     strategy = StrategyEngine(data_provider=data_engine, config_path="config.yaml")
     strategy.lab._conn = mem_conn
     
-    # Range: 2018-01-01 to 2022-12-31 (Training Window)
-    start_date = datetime(2018, 1, 1)
-    end_date = datetime(2022, 12, 31)
+    # Range: Loaded from config.yaml
+    tf = config['model_pipeline']['timeframes']
+    
+    def parse_date(d_str):
+        if d_str == 'now': return datetime.now()
+        return datetime.strptime(d_str, '%Y-%m-%d')
+        
+    start_date = parse_date(tf['train_start'])
+    end_date = parse_date(tf['train_end'])
+    
+    logger.info(f"RL Pre-compute: Targeting window {start_date.date()} -> {end_date.date()}")
     
     current_time = start_date
     rankings_list = []

@@ -36,10 +36,88 @@ class InstitutionalIngestor:
                 logger.info(f"InstitutionalIngestor: Initialized for {self.provider}")
 
     def ingest_universe(self, tickers: list, start_date: str, end_date: str):
+        # Professional Range Analysis: Check what we already have in DuckDB
+        missing_tails = {} # ticker -> adjusted_start
+        missing_heads = {} # ticker -> adjusted_end
+        
+        target_start = pd.to_datetime(start_date).tz_localize('UTC') if pd.to_datetime(start_date).tzinfo is None else pd.to_datetime(start_date)
+        target_end = pd.to_datetime(end_date).tz_localize('UTC') if pd.to_datetime(end_date).tzinfo is None else pd.to_datetime(end_date)
+        if end_date == "now": target_end = pd.Timestamp.now(tz='UTC')
+
+        logger.info("🔍 Analyzing local database for data gaps...")
+        for ticker in tickers:
+            res = self.engine.conn.execute(f"SELECT MIN(event_time), MAX(event_time) FROM market_data WHERE ticker = '{ticker}'").fetchone()
+            if not res or res[0] is None:
+                missing_tails[ticker] = start_date
+            else:
+                db_min = pd.to_datetime(res[0]).tz_localize('UTC') if pd.to_datetime(res[0]).tzinfo is None else pd.to_datetime(res[0])
+                db_max = pd.to_datetime(res[1]).tz_localize('UTC') if pd.to_datetime(res[1]).tzinfo is None else pd.to_datetime(res[1])
+                
+                # Check for tail gap (new data since last run)
+                if db_max < (target_end - timedelta(hours=1)):
+                    missing_tails[ticker] = (db_max + timedelta(minutes=15)).strftime("%Y-%m-%d %H:%M:%S")
+                
+                # Check for head gap (user requested older data than we have)
+                if db_min > (target_start + timedelta(hours=1)):
+                    missing_heads[ticker] = (db_min - timedelta(minutes=15)).strftime("%Y-%m-%d %H:%M:%S")
+
+        if not missing_tails and not missing_heads:
+            logger.info("✅ DATABASE SYNCED: All requested data is already present.")
+            return
+
         if self.provider == 'ALPACA':
-            self._ingest_alpaca(tickers, start_date, end_date)
+            # Alpaca is better for bulk: We'll take the earliest missing start and fetch to now
+            if missing_tails:
+                earliest_start = min(missing_tails.values())
+                self._ingest_alpaca(list(missing_tails.keys()), earliest_start, end_date)
+            if missing_heads:
+                # This is rare (user reaching back), fetch specific head gaps
+                for t, head_end in missing_heads.items():
+                    self._ingest_alpaca([t], start_date, head_end)
+                    
         elif self.provider == 'TIINGO':
-            self._ingest_tiingo(tickers, start_date, end_date)
+            # Tiingo is ticker-by-ticker, so we can be surgical
+            all_missing = set(missing_tails.keys()) | set(missing_heads.keys())
+            self._ingest_tiingo_surgical(all_missing, missing_tails, missing_heads, start_date, end_date)
+
+    def _ingest_tiingo_surgical(self, tickers, tails, heads, global_start, global_end):
+        import time as time_module
+        logger.info(f"📡 Tiingo Surgical: Fetching {len(tickers)} tickers with adjusted ranges...")
+        timeframe = self.config.get('data_engine', {}).get('timeframe', '15Min')
+        resample_freq = timeframe.lower().replace('min', 'min').replace('day', 'day').replace('hour', 'hour')
+        
+        total_inserted = 0
+        pbar = tqdm(tickers, desc="📊 Surgical Ingestion", unit="ticker")
+        
+        for ticker in pbar:
+            # 1. Fetch Head (if requested older data)
+            if ticker in heads:
+                self._fetch_tiingo_range(ticker, global_start, heads[ticker], resample_freq)
+            
+            # 2. Fetch Tail (new data)
+            if ticker in tails:
+                self._fetch_tiingo_range(ticker, tails[ticker], global_end, resample_freq)
+            
+            time_module.sleep(0.5) # Pace
+        pbar.close()
+
+    def _fetch_tiingo_range(self, ticker, start, end, freq):
+        url = f"https://api.tiingo.com/iex/{ticker}/prices"
+        params = {"startDate": start, "endDate": end, "resampleFreq": freq, "token": self.tiingo_api_key}
+        try:
+            resp = requests.get(url, params=params)
+            if resp.status_code == 200:
+                bars = resp.json()
+                if bars:
+                    df = pd.DataFrame([{
+                        'ticker': ticker, 'event_time': pd.to_datetime(b['date']),
+                        'knowledge_time': pd.to_datetime(b['date']),
+                        'open': float(b['open']), 'high': float(b['high']),
+                        'low': float(b['low']), 'close': float(b['close']),
+                        'volume': int(b['volume']), 'is_correction': False
+                    } for b in bars])
+                    self.engine.insert_dataframe(df)
+        except: pass
 
     def _ingest_alpaca(self, tickers: list, start_date: str, end_date: str):
         base_url = "https://data.alpaca.markets/v2/stocks/bars"

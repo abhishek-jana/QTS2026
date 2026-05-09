@@ -38,6 +38,7 @@ class DataStreamer:
             self.manager.subscribe(websocket, ticker)
             # Store in Redis so InferenceWorker knows what to compute
             self.redis_client.sadd('uqts:watchlist', ticker)
+            self.redis_client.set('uqts:focused_ticker', ticker) # NEW: Explicit focus key
             logger.info(f"🎯 UI Focus changed to: {ticker}")
 
     async def start_streaming(self):
