@@ -36,4 +36,16 @@ This is a single-context repository. See `docs/agents/domain.md`.
   - `leverage_cap`: 2.5x (Reg-T Margin limit)
   -Concentration: Top 5 stocks (High conviction only)
   - `sizing`: Fixed 2.0x leverage (scaling only as kill-switch)
-- **Status:** Researching performance.
+- **Status:** Validated (+223% projection).
+
+### Logic V4: Elite Hybrid (PROPOSED)
+- **Goal:** Institutional Grade Sharpe.
+- **Parameters:** Top 12 stocks, Dynamic Beta Hedging, Hard Trailing Stop-Loss.
+
+## CLI Usage
+
+- `python run.py --ingest`: Ingest historical data (2016-Present)
+- `python run.py --train`: Train the Supervised RankNet (2018-2022)
+- `python run.py sim`: Run the Audited V5 Simulation (2023-2026)
+- `python run.py rl-train`: Train the Phase 3 RL Portfolio Pilot
+- `python run.py prod`: Launch the Production Inference Worker

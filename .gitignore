@@ -133,3 +133,8 @@ data/uqts_bitemporal.ddb*
 # UQTS-2026 Large Files
 data/
 models/
+# Reinforcement Learning
+data/rl/
+models/rl_checkpoints/
+*.png
+*.csv

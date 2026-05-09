@@ -26,14 +26,19 @@ def main():
     subparsers.add_parser("live", help="Run the Live Paper Trading Worker (Alpaca Mode)")
     subparsers.add_parser("ui", help="Run the Cockpit Backend server")
     subparsers.add_parser("sim", help="Run the Optimized High-Performance 2023-2026 Simulation")
+    subparsers.add_parser("rl-train", help="Train the Phase 3 RL Portfolio Pilot")
 
     args = parser.parse_args()
 
-    # 0. Handle Simulation
+    # 0. Handle Simulation & RL
     if args.command == "sim":
-        from scripts.simulate_production_hp import HighPerformanceProductionSim
-        sim = HighPerformanceProductionSim()
+        from alpha_factory.simulation_engine import SimulationEngineV5
+        sim = SimulationEngineV5()
         sim.run(datetime(2023, 1, 1), datetime(2026, 5, 1))
+        sys.exit(0)
+    elif args.command == "rl-train":
+        from scripts.train_rl_pilot import train_rl_pilot
+        train_rl_pilot()
         sys.exit(0)
 
     # 1. Handle Ingestion / Training (Lab Logic)
