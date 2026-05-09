@@ -105,7 +105,15 @@ class BacktestOrchestrator:
                 train_dataset = self._collect_training_data(train_start, train_end)
                 if not using_subset: torch.save(train_dataset, cache_path)
             
-            cutoff_date = datetime(2022, 6, 1)
+            # AUTOMATIC VALIDATION SELECTION (Relative to train_end)
+            val_pct = self.config['model_pipeline']['timeframes'].get('validation_split_pct', 0.15)
+            # Find the date that marks the start of the last val_pct of samples
+            sorted_times = sorted(train_dataset.times)
+            cutoff_idx = int(len(sorted_times) * (1 - val_pct))
+            cutoff_date = sorted_times[cutoff_idx]
+            
+            logger.info(f"📊 Auto-Validation Cutoff: {cutoff_date.date()} (Last {val_pct*100:.0f}%)")
+            
             train_mask = [t < cutoff_date for t in train_dataset.times]
             val_mask = [t >= cutoff_date for t in train_dataset.times]
             val_dataset = MultiModalBatch(data={k: v[val_mask] for k, v in train_dataset.data.items()}, labels=train_dataset.labels[val_mask], tickers=['VAL'] * sum(val_mask), times=[t for i, t in enumerate(train_dataset.times) if val_mask[i]])
