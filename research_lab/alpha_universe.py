@@ -2,11 +2,12 @@ import pandas as pd
 import numpy as np
 import torch
 import duckdb
+import gc
 from dataclasses import dataclass
 from typing import List, Dict, Optional
 from datetime import datetime, timedelta, time
 from qts_core.logger import logger
-from joblib import Parallel, delayed
+from tqdm import tqdm
 
 @dataclass
 class MultiModalBatch:
@@ -36,7 +37,6 @@ class AlphaUniverse:
         from research_lab.plugins.core_plugins import ModalityRegistry
         from research_lab.alpha_core import DiurnalStandardizer
         
-        # Share the connection from DataEngine
         self._conn = conn
         self.labeler = None 
         self.config = config or {}
@@ -53,30 +53,25 @@ class AlphaUniverse:
         self.padding = self.config.get('signal_physics', {}).get('math_padding', 100)
         
         self.standardizer = DiurnalStandardizer() if 'Min' in self.timeframe else None
-        # Cache for stationary features
-        self._feat_cache = {}
+        self._feat_cache = None
 
     @property
     def conn(self):
-        if self._conn is None:
+        is_closed = True
+        if self._conn is not None:
+            try:
+                self._conn.execute("SELECT 1")
+                is_closed = False
+            except Exception:
+                is_closed = True
+        
+        if is_closed:
             if self.db_path:
                 import duckdb
-                # SENIOR FIX: Open in read-only mode for workers to avoid locking issues
-                # This ensures that parallel walk-forward doesn't crash on DB access
                 self._conn = duckdb.connect(self.db_path, read_only=True)
             else:
-                raise ValueError("DuckDB connection lost and no db_path available for re-init.")
+                raise ValueError("DuckDB connection lost.")
         return self._conn
-
-    def __getstate__(self):
-        state = self.__dict__.copy()
-        # SENIOR FIX: DuckDB connections cannot be pickled.
-        # We null it out and let the @property re-establish it in the worker process.
-        state['_conn'] = None 
-        return state
-
-    def __setstate__(self, state):
-        self.__dict__.update(state)
 
     def get_batch_pit_view(self, tickers: List[str], as_of: datetime, start_time: Optional[datetime] = None) -> pd.DataFrame:
         ticker_list = "', '".join(tickers)
@@ -95,132 +90,104 @@ class AlphaUniverse:
             )
             SELECT {col_str} FROM ranked_data WHERE rn = 1 ORDER BY event_time ASC
         """
-        # SENIOR FIX: Use .df() for optimized transfer to pandas, avoids RecordBatchReader issues
         pit_view = self.conn.execute(query).df()
         if pit_view.empty: return pit_view
         return pit_view.set_index('event_time')
 
-    def snapshot(self, as_of: datetime, tickers: List[str], lookback: int = None, horizon: int = None, latest_only: bool = True, backtest_mode: bool = False) -> Optional[MultiModalBatch]:
-        from research_lab.alpha_labeler import AlphaLabeler
-        if not self.labeler: self.labeler = AlphaLabeler()
-        lookback, horizon = lookback or self.lookback, horizon or self.horizon
-        total_window = lookback + self.padding
+    def snapshot(self, as_of: datetime, tickers: List[str], lookback: int = None, labels_override: pd.DataFrame = None, shard_override: Dict[str, pd.DataFrame] = None) -> Optional[MultiModalBatch]:
+        """
+        SENIOR V5.8.6: Ultra-Fast Shard-Based Snapshot.
+        Replaces boolean masking with O(1) shard lookups.
+        """
+        lookback = lookback or self.lookback
+        if shard_override is None: return None
         
-        if 'Min' in self.timeframe:
-            days_back = max((total_window // 26) + 10, 60)
-        else:
-            days_back = max(total_window + 10, 100)
-            
-        fetch_start = as_of - timedelta(days=days_back)
-        
-        if 'Min' in self.timeframe:
-            fetch_limit = as_of + timedelta(days=horizon + 10) if backtest_mode else as_of
-            batch_view = self.get_batch_pit_view(tickers, fetch_limit, start_time=fetch_start)
-        else:
-            fetch_limit = as_of + timedelta(days=horizon * 2) if backtest_mode else as_of
-            batch_view = self.get_batch_pit_view(tickers, fetch_limit, start_time=fetch_start)
-            
-        if batch_view.empty: return None
-        
-        processed_views = {}
-        for ticker in tickers:
-            raw_ticker_data = batch_view[batch_view['ticker'] == ticker]
-            if raw_ticker_data.empty: continue
-            if len(raw_ticker_data[raw_ticker_data.index <= as_of]) < lookback: continue
-            
-            std_ticker_data = raw_ticker_data.copy()
-            if self.standardizer:
-                std_ticker_data = self.standardizer.transform(std_ticker_data)
-                
-            processed_views[ticker] = {
-                'raw': raw_ticker_data[raw_ticker_data.index <= fetch_limit],
-                'std': std_ticker_data[std_ticker_data.index <= fetch_limit]
-            }
-            
-        if not processed_views: return None
-        
-        # SENIOR OBSERVABILITY FIX: Periodic logging in worker to show progress
-        # Since this runs in a worker, we log occasionally based on the day of the week
-        if as_of.day % 7 == 0:
-            logger.info(f"✨ Worker processing snapshot as of {as_of.date()}...")
-            
-        combined_raw_view = pd.concat([v['raw'] for v in processed_views.values()])
-        returns_df = self.labeler.generate_labels(combined_raw_view, horizon=horizon, timeframe=self.timeframe)
-        market_proxy = returns_df['SPY'] if 'SPY' in returns_df.columns else returns_df.mean(axis=1)
-        residuals = self.labeler.residualize_universe(returns_df.drop(columns=['SPY']) if 'SPY' in returns_df.columns else returns_df, market_proxy)
-        z_scored_labels = self.labeler.apply_z_score(residuals)
-        
+        final_labels_df = labels_override
         fused_data = {p.name: [] for p in self.plugins}; fused_data['raw_price'] = []
         y_list, final_tickers, final_times = [], [], []
         
-        for ticker, views in processed_views.items():
-            std_view = views['std']
-            raw_view = views['raw']
+        for ticker in tickers:
+            if ticker not in shard_override: continue
+            full_ticker_data = shard_override[ticker]
             
-            feat_view = std_view[std_view.index <= as_of]
-            if latest_only:
-                if 'Min' in self.timeframe:
-                    closes = feat_view[feat_view.index.time >= time(15, 45)]
-                    if closes.empty: continue
-                    feat_view = std_view[std_view.index <= closes.index[-1]].tail(total_window)
-                else:
-                    feat_view = feat_view.tail(total_window)
+            # SENIOR FIX: Alignment handling for Intraday vs Daily
+            # We look for the latest available bar that is <= as_of
+            ticker_slice_all = full_ticker_data[full_ticker_data.index <= as_of]
+            if len(ticker_slice_all) < lookback: continue
             
-            # MEMOIZATION: Use cache
-            cache_key = (ticker, feat_view.index[-1])
-            if cache_key not in self._feat_cache:
-                self._feat_cache[cache_key] = {p.name: p.transform(feat_view, lookback) for p in self.plugins}
-            ticker_features = self._feat_cache[cache_key]
+            # The 'actual_as_of' is the last bar time in this stock's history
+            actual_as_of = ticker_slice_all.index[-1]
+            ticker_slice = ticker_slice_all.tail(lookback + 5)
             
-            ticker_labels = z_scored_labels[ticker] if ticker in z_scored_labels.columns else pd.Series(dtype=float)
-            all_indices = range(lookback - 1, len(feat_view))
-            if latest_only:
-                indices = [all_indices[-1]] if len(all_indices) > 0 else []
-            else:
-                indices = [i for i in all_indices if feat_view.index[i].time() >= time(15, 45)]
+            # Generate features
+            ticker_features = {p.name: p.transform(ticker_slice, lookback) for p in self.plugins}
             
-            for i, t_idx in enumerate(all_indices):
-                if t_idx not in indices: continue
-                event_time = feat_view.index[t_idx]
-                label_val = ticker_labels.get(event_time, np.nan)
-                if backtest_mode and np.isnan(label_val): continue
+            # Pull pre-computed label using the ACTUAL bar time
+            ticker_labels = final_labels_df[ticker] if ticker in final_labels_df.columns else pd.Series(dtype=float)
+            label_val = ticker_labels.get(actual_as_of, np.nan)
+            
+            if np.isnan(label_val): continue
+            
+            for p_name, tensor in ticker_features.items(): 
+                fused_data[p_name].append(tensor[-1])
                 
-                for p_name, tensor in ticker_features.items(): fused_data[p_name].append(tensor[i])
-                fused_data['raw_price'].append(torch.tensor(float(raw_view.loc[event_time, 'close'])))
-                y_list.append(label_val); final_tickers.append(ticker); final_times.append(event_time)
+            fused_data['raw_price'].append(torch.tensor(float(ticker_slice.loc[actual_as_of, 'close'])))
+            y_list.append(label_val); final_tickers.append(ticker); final_times.append(actual_as_of)
                 
         if not final_tickers: return None
         return MultiModalBatch(data={name: torch.stack(tensors) for name, tensors in fused_data.items()}, labels=torch.tensor(np.array(y_list)).float(), tickers=final_tickers, times=final_times)
 
-    def walk_forward(self, universe: List[str], start_date: datetime, end_date: datetime, stride: int = 21, **kwargs):
+    def walk_forward(self, universe: List[str], start_date: datetime, end_date: datetime, stride: int = 1, **kwargs):
+        """
+        SENIOR V5.8.6: Sharded-Memory Walk-Forward.
+        Fixed time-alignment logic to process 15-min data with daily strides.
+        """
         results = []
-        def _get_dates():
-            current = start_date
-            while current <= end_date:
-                yield current
-                current += timedelta(days=stride)
-        dates = list(_get_dates())
         
-        logger.info(f"🚀 Parallelizing walk-forward over {len(dates)} days...")
+        from research_lab.alpha_labeler import AlphaLabeler
+        if not self.labeler: self.labeler = AlphaLabeler()
         
-        # SENIOR FIX: Close the main connection before parallelizing to avoid DuckDB lock contention.
-        # Worker processes will re-open it in read-only mode.
-        if self._conn:
-            try:
-                self._conn.close()
-            except Exception: pass
-            self._conn = None
-
-        walk_latest_only = kwargs.pop('latest_only', True)
-        walk_backtest_mode = kwargs.pop('backtest_mode', True)
+        logger.info(f"📈 Initiating Shard-Based Pre-computation for {len(universe)} tickers...")
+        total_window = self.lookback + self.padding
+        data_fetch_limit = end_date + timedelta(days=self.horizon * 2)
+        fetch_start = start_date - timedelta(days=total_window + 30)
         
-        batch_results = Parallel(n_jobs=-1)(
-            delayed(self.snapshot)(
-                as_of=d, tickers=universe, latest_only=walk_latest_only, backtest_mode=walk_backtest_mode, **kwargs
-            ) for d in dates
-        )
-        
-        for i, batch in enumerate(batch_results):
-            if batch: results.append({'date': dates[i], 'batch': batch})
+        # 1. Fetch entire history once
+        all_history = self.get_batch_pit_view(universe, data_fetch_limit, start_time=fetch_start)
+        if all_history.empty: return []
             
+        # 2. Pre-compute Labels (Vectorized)
+        raw_returns = self.labeler.generate_labels(all_history, horizon=self.horizon, timeframe=self.timeframe)
+        if 'SPY' in raw_returns.columns: excess = raw_returns.sub(raw_returns['SPY'], axis=0)
+        else: excess = raw_returns.sub(raw_returns.mean(axis=1), axis=0)
+        self.precomputed_labels = self.labeler.apply_z_score(excess)
+        
+        # 3. Create Shards
+        shards = {t: all_history[all_history['ticker'] == t].copy() for t in universe}
+        del all_history 
+        gc.collect()
+
+        # 4. Determine dates (Process at the end of each day for the most info)
+        # We process at 16:00 (Market Close) for every day in the range.
+        dates = []
+        curr = start_date.replace(hour=16, minute=0, second=0, microsecond=0)
+        while curr <= end_date.replace(hour=16, minute=0, second=0, microsecond=0):
+            # Only process if it's a weekday
+            if curr.weekday() < 5:
+                dates.append(curr)
+            curr += timedelta(days=stride)
+            
+        logger.info(f"🚀 Sharded Loop starting. Total tasks: {len(dates)}")
+
+        # 5. Fast Serial Loop
+        for d in tqdm(dates, desc="🏗️ Building Dataset"):
+            batch = self.snapshot(as_of=d, tickers=universe, lookback=self.lookback, 
+                                 labels_override=self.precomputed_labels,
+                                 shard_override=shards)
+            if batch:
+                results.append({'date': d, 'batch': batch})
+            
+            if len(results) > 0 and len(results) % 100 == 0: gc.collect()
+                
+        logger.success(f"✅ Data Extraction Complete. Total Samples: {len(results)}")
         return results

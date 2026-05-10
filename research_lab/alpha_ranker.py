@@ -53,13 +53,18 @@ class RankNet(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor: return self.model(x)
 
     @torch.jit.ignore
-    def fit(self, dataset, epochs: int = 50, lr: float = 0.01, verbose: bool = True, 
-            device: torch.device = torch.device('cpu'), batch_size: int = 1024, patience: int = 5, 
-            weight_decay: float = 0.0, val_dataset: Any = None):
-        self.to(device); self.train(); optimizer = optim.Adam(self.parameters(), lr=lr, weight_decay=weight_decay)
-        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
-        criterion = PairwiseRankLoss(); scaler = torch.amp.GradScaler('cuda', enabled=(device.type == 'cuda'))
+    def fit(self, dataset, epochs: int = 50, lr: float = 0.0003, verbose: bool = True, 
+            device: torch.device = torch.device('cpu'), batch_size: int = 1024, patience: int = 15, 
+            weight_decay: float = 1e-5, val_dataset: Any = None, pointwise_lambda: float = 0.1):
+        self.to(device); self.train()
         
+        optimizer = optim.AdamW(self.parameters(), lr=lr, weight_decay=weight_decay)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3)
+        
+        criterion_pairwise = PairwiseRankLoss()
+        criterion_pointwise = nn.MSELoss()
+        
+        scaler = torch.amp.GradScaler('cuda', enabled=(device.type == 'cuda'))
         best_val_loss, wait, best_state = float('inf'), 0, None
 
         if hasattr(dataset, 'data') and hasattr(dataset, 'labels'):
@@ -70,72 +75,55 @@ class RankNet(nn.Module):
                 for b in range(nb):
                     optimizer.zero_grad(); idx = indices[b*abs_ : (b+1)*abs_]
                     if len(idx) < 2: continue
-                    
-                    yb = dataset.labels[idx]
-                    wb = dataset.sample_weights[idx] if hasattr(dataset, 'sample_weights') and dataset.sample_weights is not None else None
-                    
+                    yb = dataset.labels[idx]; wb = dataset.sample_weights[idx] if hasattr(dataset, 'sample_weights') and dataset.sample_weights is not None else None
                     ii, jj = torch.randperm(len(idx), device=device), torch.randperm(len(idx), device=device)
-                    
                     with torch.amp.autocast('cuda', enabled=(device.type == 'cuda')):
                         ini = {k: v[idx][ii] for k, v in dataset.data.items()}; inj = {k: v[idx][jj] for k, v in dataset.data.items()}
                         si, sj = self.forward(ini), self.forward(inj)
-                        
                         target = torch.sign(yb[ii] - yb[jj]).unsqueeze(1)
-                        pair_weights = (wb[ii] + wb[jj]).unsqueeze(1) / 2.0 if wb is not None else None
-                        
-                        loss = criterion(si, sj, target, weights=pair_weights)
-                        
-                    scaler.scale(loss).backward(); scaler.unscale_(optimizer); torch.nn.utils.clip_grad_norm_(self.parameters(), 1.0)
-                    scaler.step(optimizer); scaler.update(); tl += loss.item()
-                scheduler.step(); al = tl / max(1, nb); v_loss_val = None
+                        magnitude_weight = torch.abs(yb[ii] - yb[jj]).unsqueeze(1); magnitude_weight = magnitude_weight / (magnitude_weight.mean() + 1e-6)
+                        pair_weights = (wb[ii] + wb[jj]).unsqueeze(1) / 2.0 if wb is not None else torch.ones_like(target)
+                        loss_pairwise = criterion_pairwise(si, sj, target, weights=pair_weights * magnitude_weight)
+                        loss_pointwise = torch.clamp(criterion_pointwise(si, yb[ii].unsqueeze(1)) + criterion_pointwise(sj, yb[jj].unsqueeze(1)), 0, 10.0)
+                        loss = loss_pairwise + (pointwise_lambda * loss_pointwise)
+                    scaler.scale(loss).backward(); scaler.unscale_(optimizer); torch.nn.utils.clip_grad_norm_(self.parameters(), 1.0); scaler.step(optimizer); scaler.update(); tl += loss.item()
+                if np.isnan(tl):
+                    logger.error(f"💣 CRITICAL: NaN detected at Epoch {epoch+1}. Aborting training."); break
+                al = tl / max(1, nb); v_loss_val = None
                 if val_dataset:
                     self.eval()
                     with torch.no_grad(), torch.amp.autocast('cuda', enabled=(device.type == 'cuda')):
                         v_ns = len(val_dataset.labels); v_idx = torch.randperm(v_ns, device=device)[:min(batch_size, v_ns)]
                         if len(v_idx) >= 2:
-                            v_yb = val_dataset.labels[v_idx]
-                            v_wb = val_dataset.sample_weights[v_idx] if hasattr(val_dataset, 'sample_weights') and val_dataset.sample_weights is not None else None
-                            
+                            v_yb = val_dataset.labels[v_idx]; v_wb = val_dataset.sample_weights[v_idx] if hasattr(val_dataset, 'sample_weights') and val_dataset.sample_weights is not None else None
                             vii, vjj = torch.randperm(len(v_idx), device=device), torch.randperm(len(v_idx), device=device)
-                            v_ini, v_inj = {k: v[v_idx][vii] for k, v in val_dataset.data.items()}, {k: v[v_idx][vjj] for k, v in val_dataset.data.items()}
-                            
-                            v_target = torch.sign(v_yb[vii] - v_yb[vjj]).unsqueeze(1)
-                            v_pair_weights = (v_wb[vii] + v_wb[vjj]).unsqueeze(1) / 2.0 if v_wb is not None else None
-                            
-                            v_loss_val = criterion(self.forward(v_ini), self.forward(v_inj), v_target, weights=v_pair_weights).item()
-                    self.train()
-                
-                # SENIOR FIX: Early Stopping on Validation Loss with State Restoration
+                            v_si, v_sj = self.forward({k: v[v_idx][vii] for k, v in val_dataset.data.items()}), self.forward({k: v[v_idx][vjj] for k, v in val_dataset.data.items()})
+                            v_target = torch.sign(v_yb[vii] - v_yb[vjj]).unsqueeze(1); v_mag = torch.abs(v_yb[vii] - v_yb[vjj]).unsqueeze(1); v_mag = v_mag / (v_mag.mean() + 1e-6)
+                            v_loss_pw = criterion_pairwise(v_si, v_sj, v_target, weights=((v_wb[vii] + v_wb[vjj]).unsqueeze(1)/2.0 if v_wb is not None else 1.0) * v_mag).item()
+                            v_loss_pt = (criterion_pointwise(v_si, v_yb[vii].unsqueeze(1)) + criterion_pointwise(v_sj, v_yb[vjj].unsqueeze(1))).item()
+                            v_loss_val = v_loss_pw + (pointwise_lambda * v_loss_pt)
+                    self.train(); scheduler.step(v_loss_val)
                 if v_loss_val is not None:
                     if verbose: logger.info(f"   [Epoch {epoch+1}/{epochs}] Loss: {al:.6f} | Val Loss: {v_loss_val:.4f}")
-                    if v_loss_val < best_val_loss:
-                        best_val_loss, wait = v_loss_val, 0
-                        best_state = copy.deepcopy(self.state_dict())
+                    if v_loss_val < best_val_loss: best_val_loss, wait = v_loss_val, 0; best_state = copy.deepcopy(self.state_dict())
                     else:
                         wait += 1
-                        if wait >= patience:
-                            logger.warning(f"Early stopping at epoch {epoch+1}. Restoring best state (Val Loss: {best_val_loss:.4f})")
-                            self.load_state_dict(best_state); break
-                else:
-                    if verbose: logger.info(f"   [Epoch {epoch+1}/{epochs}] Loss: {al:.6f}")
+                        if wait >= patience: logger.warning(f"Early stopping at epoch {epoch+1}. Restoring best state (Val Loss: {best_val_loss:.4f})"); self.load_state_dict(best_state); break
+                else: scheduler.step(al); logger.info(f"   [Epoch {epoch+1}/{epochs}] Loss: {al:.6f}")
             return
-        
-        # B. SIMPLE TENSOR LOGIC (Champion/MLP)
         if isinstance(dataset, tuple):
-            X_all, y_all = dataset; ns = len(y_all); abs_ = min(batch_size, ns); nb = ns // abs_
-            if nb == 0: nb, abs_ = 1, ns
+            X_all, y_all = dataset; ns = len(y_all); abs_ = min(batch_size, ns); nb = ns // abs_; champion_scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
             for epoch in range(epochs):
                 tl, indices = 0, torch.randperm(ns, device=device)
                 for b in range(nb):
                     optimizer.zero_grad(); idx = indices[b*abs_ : (b+1)*abs_]
                     if len(idx) < 2: continue
-                    X, y = X_all[idx].to(device), y_all[idx].to(device)
-                    ii, jj = torch.randperm(len(idx), device=device), torch.randperm(len(idx), device=device)
+                    X, y = X_all[idx].to(device), y_all[idx].to(device); ii, jj = torch.randperm(len(idx), device=device), torch.randperm(len(idx), device=device)
                     with torch.amp.autocast('cuda', enabled=(device.type == 'cuda')):
-                        loss = criterion(self.forward(X[ii]), self.forward(X[jj]), torch.sign(y[ii] - y[jj]).unsqueeze(1))
+                        si, sj = self.forward(X[ii]), self.forward(X[jj]); target = torch.sign(y[ii] - y[jj]).unsqueeze(1)
+                        loss = criterion_pairwise(si, sj, target) + pointwise_lambda * (criterion_pointwise(si, y[ii].unsqueeze(1)) + criterion_pointwise(sj, y[jj].unsqueeze(1)))
                     scaler.scale(loss).backward(); scaler.step(optimizer); scaler.update(); tl += loss.item()
-                scheduler.step(); al = tl / max(1, nb)
-                if verbose: logger.info(f"   [Epoch {epoch+1}/{epochs}] Loss: {al:.6f}")
+                champion_scheduler.step(); al = tl / max(1, nb); logger.info(f"   [Epoch {epoch+1}/{epochs}] Loss: {al:.6f}")
             return
 
     @torch.jit.ignore
@@ -155,35 +143,38 @@ class RankNet(nn.Module):
         if hasattr(self, 'specs'):
             example_inputs = {spec.name: torch.randn(1, *spec.shape).to(device) for spec in self.specs}
             torch.jit.trace(self, (example_inputs,), check_trace=False).save(path)
-        else:
-            torch.jit.trace(self, (torch.randn(1, self.model[0].in_features).to(device),), check_trace=False).save(path)
-        logger.success(f"RankNet serialized to {path}")
+        else: torch.jit.trace(self, (torch.randn(1, self.model[0].in_features).to(device),), check_trace=False).save(path)
 
 class MultiModalRankNet(RankNet):
     def __init__(self, specs: List[InputSpec] = None, hidden_dim: int = 64, **kwargs):
         if specs is None:
             scales, lookback = kwargs.get('scales', 32), kwargs.get('lookback', 63)
-            specs = [InputSpec(name='x_seq', shape=(lookback, 1), type='seq'), InputSpec(name='x_spatial', shape=(1, scales, lookback), type='spatial')]
+            specs = [InputSpec(name='x_seq', shape=(lookback, 1), type='seq'), InputSpec(name='x_spatial', shape=(1, scales, lookback), type='spatial'), InputSpec(name='x_momentum', shape=(lookback, 3), type='seq')]
         dropout = kwargs.get('dropout', 0.4)
         super(MultiModalRankNet, self).__init__(input_dim=hidden_dim, hidden_dim=hidden_dim, dropout=dropout)
         self.specs, self.hidden_dim, self.encoders, self.norms = specs, hidden_dim, nn.ModuleDict(), nn.ModuleDict()
         vh, gl = kwargs.get('vit_heads', 4), kwargs.get('gnn_layers', 2)
-        self.gate = nn.Sequential(nn.Linear(hidden_dim * len(specs), len(specs)), nn.Softmax(dim=1))
+        # SENIOR FIX (V5.8.8): Increased complexity of Modality Gate and added learnable scaling
+        self.gate = nn.Sequential(nn.Linear(hidden_dim * len(specs), hidden_dim), nn.ReLU(), nn.Linear(hidden_dim, len(specs)), nn.Softmax(dim=1))
+        self.modality_scales = nn.Parameter(torch.ones(len(specs)))
+        self.spatial_dropout = nn.Dropout(p=0.3)
         for spec in specs:
-            # SENIOR FIX: Individual LayerNorm for each stream before fusion
             self.norms[spec.name] = nn.LayerNorm(hidden_dim)
             if spec.type == 'seq': self.encoders[spec.name] = nn.LSTM(input_size=spec.shape[-1], hidden_size=hidden_dim, num_layers=2, batch_first=True, dropout=dropout)
-            elif spec.type == 'spatial':
-                img_h = spec.shape[1]
-                self.encoders[spec.name] = LightweightViT(img_size=spec.shape[1:], patch_size=(img_h, 9), in_chans=spec.shape[0], embed_dim=hidden_dim, num_heads=vh, dropout=dropout)
+            elif spec.type == 'spatial': self.encoders[spec.name] = LightweightViT(img_size=spec.shape[1:], patch_size=(spec.shape[1], 9), in_chans=spec.shape[0], embed_dim=hidden_dim, num_heads=vh, dropout=dropout)
             elif spec.type == 'graph': self.encoders[spec.name] = LightweightGNN(in_features=spec.shape[0], embed_dim=hidden_dim, depth=gl)
+
     def forward(self, inputs: Dict[str, torch.Tensor]) -> torch.Tensor:
         embs = []
-        for spec in self.specs:
+        for i, spec in enumerate(self.specs):
             x = inputs[spec.name]
             if spec.type == 'seq': _, (h_n, _) = self.encoders[spec.name](x); e = h_n[-1]
+            elif spec.type == 'spatial':
+                e = self.encoders[spec.name](x)
+                if self.training: e = self.spatial_dropout(e)
             else: e = self.encoders[spec.name](x)
-            embs.append(self.norms[spec.name](e)) # Apply scaling
+            # Apply individual learnable scale and norm
+            embs.append(self.norms[spec.name](e) * self.modality_scales[i])
         stacked_embs = torch.stack(embs, dim=1); flat_embs = torch.cat(embs, dim=1)
         weights = self.gate(flat_embs).unsqueeze(-1)
         return self.model((stacked_embs * weights).sum(dim=1))
@@ -192,6 +183,5 @@ class PairwiseRankLoss(nn.Module):
     def __init__(self, sigma: float = 1.0): super(PairwiseRankLoss, self).__init__(); self.sigma = sigma
     def forward(self, s_i, s_j, target, weights=None):
         loss = -((1 + target) / 2) * self.sigma * (s_i - s_j) + torch.log(1 + torch.exp(self.sigma * (s_i - s_j)))
-        if weights is not None:
-            loss = loss * weights
+        if weights is not None: loss = loss * weights
         return loss.mean()

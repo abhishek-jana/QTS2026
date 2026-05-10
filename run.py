@@ -2,6 +2,10 @@ import sys
 import os
 import argparse
 import yaml
+import json
+import random
+import numpy as np
+import torch
 from datetime import datetime
 from qts_core.logger import logger
 from dotenv import load_dotenv
@@ -13,89 +17,152 @@ if ROOT_DIR not in sys.path: sys.path.append(ROOT_DIR)
 # Explicitly load .env file
 load_dotenv(os.path.join(ROOT_DIR, ".env"))
 
-def main():
-    parser = argparse.ArgumentParser(description="UQTS-2026 Unified Execution Muscle")
-    parser.add_argument("--ingest", action="store_true", help="Run full historical data ingestion")
-    parser.add_argument("--train", action="store_true", help="Run 5-year model training")
-    parser.add_argument("--eval-only", action="store_true", help="Skip training, run evaluation only")
-    parser.add_argument("--precompute-rl", action="store_true", help="Pre-compute data for Phase 3 RL training")
+def set_seed(seed=42):
+    """Ensures bit-level reproducibility across all components."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    logger.debug(f"Reproducibility Mode: Random Seed {seed} Locked.")
 
+def cleanup_zombie_locks():
+    """SENIOR AUTOMATION: Proactively release DuckDB locks. Non-breaking if psutil missing."""
+    try:
+        import psutil
+        import signal
+    except ImportError:
+        logger.warning("⚠️ 'psutil' not found. Skipping zombie lock cleanup. System may hit DuckDB IO Errors.")
+        return
+
+    try:
+        with open("config.yaml", "r") as f:
+            conf = yaml.safe_load(f)
+        db_path = conf.get('data_engine', {}).get('storage_path', 'data/uqts_v2_intraday.ddb')
+        db_full_path = os.path.abspath(db_path)
+        
+        current_pid = os.getpid()
+        
+        for proc in psutil.process_iter(['pid', 'name', 'open_files']):
+            try:
+                files = proc.info.get('open_files')
+                if files:
+                    for f in files:
+                        if f.path == db_full_path and proc.info['pid'] != current_pid:
+                            logger.warning(f"🧹 Auto-Cleanup: Evicting zombie process {proc.info['pid']} from DB lock.")
+                            os.kill(proc.info['pid'], signal.SIGKILL)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+    except Exception as e:
+        logger.debug(f"Cleanup failed (non-critical): {e}")
+
+def parse_date(d_str):
+    if d_str == 'now': return datetime.now()
+    return datetime.strptime(d_str, '%Y-%m-%d')
+
+def main():
+    parser = argparse.ArgumentParser(description="UQTS-2026 Unified Intelligence CLI")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed (default: 42)")
     subparsers = parser.add_subparsers(dest="command", help="System components")
 
-    # Position-based commands
-    subparsers.add_parser("lab", help="Run the Research Lab Orchestrator")
-    subparsers.add_parser("prod", help="Run the Production Inference Worker")
-    subparsers.add_parser("live", help="Run the Live Paper Trading Worker")
-    subparsers.add_parser("ui", help="Run the Cockpit Backend server")
-    subparsers.add_parser("sim", help="Run the High-Performance Simulation")
+    # Load config for smart defaults
+    try:
+        with open("config.yaml", "r") as f:
+            conf = yaml.safe_load(f)
+        default_steps = conf.get('model_pipeline', {}).get('rl_training', {}).get('total_timesteps', 1000000)
+    except Exception:
+        default_steps = 1000000
 
-    # RL Command with its own arguments
-    rl_parser = subparsers.add_parser("rl-train", help="Train the Phase 3 RL Portfolio Pilot")
-    rl_parser.add_argument("--total-timesteps", type=int, default=100000, help="Number of training steps")
+    # --- 1. RankNet Pipeline (Stock Picker) ---
+    ranknet_parser = subparsers.add_parser("ranknet", help="Supervised Stock Picker")
+    ranknet_sub = ranknet_parser.add_subparsers(dest="subcommand")
+    ranknet_sub.add_parser("ingest")
+    ranknet_sub.add_parser("train")
+    ranknet_sub.add_parser("eval")
+
+    # --- 2. RL Pipeline (Macro Allocator) ---
+    rl_parser = subparsers.add_parser("rl", help="Reinforcement Learning")
+    rl_sub = rl_parser.add_subparsers(dest="subcommand")
+    rl_sub.add_parser("data")
+    train_parser = rl_sub.add_parser("train")
+    train_parser.add_argument("--steps", type=int, default=default_steps)
+    rl_sub.add_parser("eval")
+
+    # --- 3. Full Pipeline ---
+    full_parser = subparsers.add_parser("full", help="Complete sequential pipeline")
+    full_parser.add_argument("--steps", type=int, default=default_steps)
+
+    # --- 4. Operations ---
+    subparsers.add_parser("prod")
+    subparsers.add_parser("live")
+    subparsers.add_parser("ui")
 
     args = parser.parse_args()
 
-    # 0. Handle RL Pre-computation
-    if args.precompute_rl:
+    # SENIOR DEV LOGIC: Always be reproducible, always be clean.
+    set_seed(args.seed)
+    if args.command in ["full", "ranknet", "rl"]:
+        cleanup_zombie_locks()
+
+    # --- ROUTING ---
+
+    if args.command == "full":
+        logger.info("🚀 EXECUTING FULL PRODUCTION SUITE (V5.8 GROWTH HUNTER)")
+        from research_lab.backtest_comparison import BacktestOrchestrator
+        orch = BacktestOrchestrator()
+        tf = orch.config['model_pipeline']['timeframes']
+        orch.run_comparison(parse_date(tf['train_start']), parse_date(tf['train_end']),
+                           parse_date(tf['test_start']), parse_date(tf['test_end']))
+        
         from scripts.precompute_rl_data import precompute_rl_data
         precompute_rl_data()
-        return
-
-    # 1. Handle Simulation & RL Training
-    if args.command == "sim":
-        from alpha_factory.simulation_engine import SimulationEngineV5
-        sim = SimulationEngineV5()
-        sim.run(datetime(2024, 1, 1), datetime(2026, 5, 1))
-        return
-    elif args.command == "rl-train":
+        
         from scripts.train_rl_pilot import train_rl_pilot
-        train_rl_pilot(total_timesteps=args.total_timesteps)
-        return
+        train_rl_pilot(total_timesteps=args.steps)
+        
+        from scripts.rl_evaluator import run_rl_evaluation
+        run_rl_evaluation()
 
-    # 2. Handle Ingestion / Training (Lab Logic)
-    if args.ingest or args.train or args.eval_only or args.command == "lab":
+    elif args.command == "ranknet":
         from research_lab.backtest_comparison import BacktestOrchestrator
-        orchestrator = BacktestOrchestrator()
-        
-        if args.ingest:
-            orchestrator.run_ingestion()
-        
-        if args.train or (args.command == "lab" and not args.eval_only) or args.eval_only:
-            # PRO EXPERT SETTING: Load timeframes from config
-            tf = orchestrator.config['model_pipeline']['timeframes']
-            
-            def parse_date(d_str):
-                if d_str == 'now': return datetime.now()
-                return datetime.strptime(d_str, '%Y-%m-%d')
+        orch = BacktestOrchestrator()
+        if args.subcommand == "ingest": orch.run_ingestion()
+        elif args.subcommand == "train":
+            tf = orch.config['model_pipeline']['timeframes']
+            orch.run_comparison(parse_date(tf['train_start']), parse_date(tf['train_end']),
+                               parse_date(tf['test_start']), parse_date(tf['test_end']), skip_train=False)
+        elif args.subcommand == "eval":
+            tf = orch.config['model_pipeline']['timeframes']
+            orch.run_comparison(parse_date(tf['train_start']), parse_date(tf['train_end']),
+                               parse_date(tf['test_start']), parse_date(tf['test_end']), skip_train=True)
 
-            orchestrator.run_comparison(
-                parse_date(tf['train_start']), parse_date(tf['train_end']), 
-                parse_date(tf['test_start']), parse_date(tf['test_end']),
-                skip_train=args.eval_only
-            )
-            
-    # 3. Handle Long-Running Workers
-    if args.command in ["prod", "live"]:
+    elif args.command == "rl":
+        if args.subcommand == "data":
+            from scripts.precompute_rl_data import precompute_rl_data
+            precompute_rl_data()
+        elif args.subcommand == "train":
+            from scripts.train_rl_pilot import train_rl_pilot
+            train_rl_pilot(total_timesteps=args.steps)
+        elif args.subcommand == "eval":
+            from scripts.rl_evaluator import run_rl_evaluation
+            run_rl_evaluation()
+
+    elif args.command in ["prod", "live"]:
         import asyncio
         from execution_muscle.inference_worker import InferenceWorker
-        
-        # Override config trading_mode if explicit 'live' command is used
         if args.command == "live":
-            with open("config.yaml", "r") as f:
-                conf = yaml.safe_load(f)
+            with open("config.yaml", "r") as f: conf = yaml.safe_load(f)
             conf['execution_muscle']['trading_mode'] = 'paper'
-            with open("config.yaml", "w") as f:
-                yaml.dump(conf, f, default_flow_style=False)
-        
-        worker = InferenceWorker()
-        worker.initialize()
-        asyncio.run(worker.run())
+            with open("config.yaml", "w") as f: yaml.dump(conf, f)
+        worker = InferenceWorker(); worker.initialize(); asyncio.run(worker.run())
         
     elif args.command == "ui":
         import uvicorn
         uvicorn.run("cockpit_backend.main:app", host="0.0.0.0", port=8000, reload=True)
     
-    elif not any([args.ingest, args.train, args.eval_only, args.command, args.precompute_rl]):
+    else:
         parser.print_help()
 
 if __name__ == "__main__":

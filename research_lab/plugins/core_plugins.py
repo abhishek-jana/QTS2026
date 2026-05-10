@@ -79,7 +79,14 @@ class SpatialPlugin(ModalityPlugin):
     def transform(self, pit_view: pd.DataFrame, lookback: int) -> torch.Tensor:
         stationary = self.fd.transform(pit_view['close']).values
         spectrogram = self.wfg.generate(pd.Series(stationary))
-        windows = [spectrogram[:, t-lookback:t] for t in range(lookback, len(stationary) + 1)]
+        
+        # SENIOR FIX: Per-Scale Z-Score Normalization
+        # Wavelet coefficients vary wildly by scale. ViT requires stable standard deviations.
+        means = np.mean(spectrogram, axis=1, keepdims=True)
+        stds = np.std(spectrogram, axis=1, keepdims=True) + 1e-8
+        spectrogram_norm = (spectrogram - means) / stds
+
+        windows = [spectrogram_norm[:, t-lookback:t] for t in range(lookback, len(stationary) + 1)]
         return torch.tensor(np.array(windows)).unsqueeze(1).float()
 
 @register_modality("x_graph")
@@ -120,4 +127,31 @@ class VolumePlugin(ModalityPlugin):
             v_norm = (v_log - np.mean(v_log)) / (np.std(v_log) + 1e-9)
             
         windows = [v_norm[t-lookback:t].reshape(-1, 1) for t in range(lookback, len(v_norm) + 1)]
+        return torch.tensor(np.array(windows)).float()
+
+@register_modality("x_momentum")
+class MomentumPlugin(ModalityPlugin):
+    """Provides raw trend visibility (no fractional differencing)."""
+    def __init__(self, **kwargs): self._name = "x_momentum"
+    @property
+    def name(self) -> str: return self._name
+    def transform(self, pit_view: pd.DataFrame, lookback: int) -> torch.Tensor:
+        close = pit_view['close'].values
+        ret_10 = np.zeros_like(close)
+        ret_20 = np.zeros_like(close)
+        ret_60 = np.zeros_like(close)
+        
+        # SENIOR FIX: Safe division to prevent RuntimeWarning on zero-padded data
+        for i in range(10, len(close)): 
+            ret_10[i] = (close[i] / close[i-10]) - 1.0 if abs(close[i-10]) > 1e-6 else 0.0
+        for i in range(20, len(close)): 
+            ret_20[i] = (close[i] / close[i-20]) - 1.0 if abs(close[i-20]) > 1e-6 else 0.0
+        for i in range(60, len(close)): 
+            ret_60[i] = (close[i] / close[i-60]) - 1.0 if abs(close[i-60]) > 1e-6 else 0.0
+        
+        # Combine into features (T, 3)
+        features = np.stack([ret_10, ret_20, ret_60], axis=1)
+        features = np.nan_to_num(features, nan=0.0, posinf=0.0, neginf=0.0) # Double-check safety
+        
+        windows = [features[t-lookback:t] for t in range(lookback, len(features) + 1)]
         return torch.tensor(np.array(windows)).float()

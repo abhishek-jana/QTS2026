@@ -9,6 +9,7 @@ data_engine:
 execution_muscle:
   max_position_size: 0.15
   min_belief_threshold: 0.65
+  risk_parity_sizing: true
   mpc_solver:
     horizon: 5
     impact_penalty: 0.01
@@ -23,30 +24,32 @@ execution_muscle:
 model_pipeline:
   architecture:
     gnn_layers: 2
-    hidden_dim: 64
-    vit_heads: 4
+    hidden_dim: 128
+    vit_heads: 8
   evaluation_dataset_path: data/oos_steps_v2.pt
   model_path: models/challenger_v2.pt
+  rl_training:
+    total_timesteps: 1000000
   timeframes:
     train_start: '2019-01-01'
     train_end: '2023-12-31'
     test_start: '2024-01-01'
     test_end: 'now'
     validation_split_pct: 0.15
-    temporal_decay_lambda: 0.001
+    temporal_decay_lambda: 0.0025
   training:
-    batch_size: 1024
-    dropout: 0.4
-    early_stopping_patience: 10
-    epochs: 50
-    lr: 0.002
+    batch_size: 4096
+    dropout: 0.3
+    early_stopping_patience: 15
+    epochs: 100
+    lr: 0.005
     weight_decay: 0.0001
   training_dataset_path: data/train_dataset_v2_full.pt
 risk_metacontroller:
   prior_belief: 0.5
 signal_physics:
   fractional_differentiation:
-    d_param: 0.4
+    d_param: 0.0
   horizon_days: 5
   lookback_days: 63
   math_padding: 250

@@ -42,10 +42,25 @@ This is a single-context repository. See `docs/agents/domain.md`.
 - **Goal:** Institutional Grade Sharpe.
 - **Parameters:** Top 12 stocks, Dynamic Beta Hedging, Hard Trailing Stop-Loss.
 
+### Logic V5: Master Chief (ACTIVE)
+- **Goal:** Multi-Regime Dominance via HRL-MoE and Multi-Modal Alpha.
+- **Architecture:** 32-Sensor RL Agent (The General) + Multi-Modal RankNet with 0.21+ IC (The Scout).
+- **Positioning:** Level 3 Risk Parity (Conviction Softmax / Rolling Volatility).
+- **Spec:** See `docs/STRATEGY_V5_MASTER_CHIEF.md`.
+
 ## CLI Usage
 
-- `python run.py --ingest`: Ingest historical data (2016-Present)
-- `python run.py --train`: Train the Supervised RankNet (2018-2022)
-- `python run.py sim`: Run the Audited V5 Simulation (2023-2026)
-- `python run.py rl-train`: Train the Phase 3 RL Portfolio Pilot
-- `python run.py prod`: Launch the Production Inference Worker
+### 1. RankNet Pipeline (The Stock Picker)
+- `python run.py ranknet ingest`: Ingest historical data for the full universe.
+- `python run.py ranknet train`: Train the Supervised RankNet on 5-year historical data.
+- `python run.py ranknet eval`: Compare RankNet performance against baselines.
+
+### 2. RL Pipeline (The Macro Allocator)
+- `python run.py rl data`: Pre-compute 32-sensor training data for RL.
+- `python run.py rl train --steps 500000`: Train the RL Portfolio Pilot.
+- `python run.py rl eval`: Run unified evaluation (Logic Audit, SPY Sim, Monte Carlo).
+
+### 3. Execution & Operations
+- `python run.py prod`: Launch the Production Inference Worker (Real Money).
+- `python run.py live`: Launch the Paper Trading Worker (Simulated Money).
+- `python run.py ui`: Launch the Mission Control Cockpit (FastAPI backend).

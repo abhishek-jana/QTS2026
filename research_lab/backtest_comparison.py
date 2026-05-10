@@ -11,6 +11,7 @@ from research_lab.alpha_ranker import RankNet, MultiModalRankNet, InputSpec
 from research_lab.real_data_ingestor import InstitutionalIngestor
 from research_lab.data_engine import DataEngine
 from scipy.stats import spearmanr
+from tqdm import tqdm
 
 class BacktestOrchestrator:
     def __init__(self, tickers=None):
@@ -45,11 +46,6 @@ class BacktestOrchestrator:
     def _collect_training_data(self, start: datetime, end: datetime) -> MultiModalBatch:
         logger.info(f"📥 Collecting multi-regime training data ({start.date()} -> {end.date()})...")
         
-        # SENIOR FIX: Explicitly close the main connection to release the DuckDB lock.
-        # This is mandatory before Parallel walk_forward starts.
-        self.engine.close()
-        
-        # SENIOR FIX: Use walk_forward to avoid OOM/Hang on large intraday datasets.
         # stride=1 day ensures we get one sample per trading day.
         # latest_only=True + the new 16:00 alignment in snapshot() ensures high fidelity.
         steps = self.universe.walk_forward(universe=self.tickers, start_date=start, end_date=end, stride=1, latest_only=True, backtest_mode=True)
@@ -72,7 +68,7 @@ class BacktestOrchestrator:
         arch_config = self.config['model_pipeline']['architecture']
         hidden_dim, vh, gl = arch_config['hidden_dim'], arch_config['vit_heads'], arch_config['gnn_layers']
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        batch_size = self.config['model_pipeline']['training'].get('batch_size', 1024)
+        batch_size = self.config['model_pipeline']['training'].get('batch_size', 4096)
         wd = self.config['model_pipeline']['training'].get('weight_decay', 0.0002)
         do = self.config['model_pipeline']['training'].get('dropout', 0.5)
         model_path = self.config['model_pipeline'].get('model_path', 'models/challenger_v2.pt')
@@ -83,6 +79,7 @@ class BacktestOrchestrator:
             elif p.name == 'x_spatial': specs.append(InputSpec(name='x_spatial', shape=(1, self.n_scales, self.lookback), type='spatial'))
             elif p.name == 'x_graph': specs.append(InputSpec(name='x_graph', shape=(8,), type='graph'))
             elif p.name == 'x_volume': specs.append(InputSpec(name='x_volume', shape=(self.lookback, 1), type='seq'))
+            elif p.name == 'x_momentum': specs.append(InputSpec(name='x_momentum', shape=(self.lookback, 3), type='seq'))
 
         champion = RankNet(input_dim=self.n_scales, hidden_dim=hidden_dim)
         challenger = MultiModalRankNet(specs=specs, hidden_dim=hidden_dim, vit_heads=vh, gnn_layers=gl, dropout=do)
@@ -98,8 +95,11 @@ class BacktestOrchestrator:
                 train_dataset = torch.load(cache_path, weights_only=True)
                 # SENIOR FIX: Validate cache compatibility (modalities AND scale count)
                 cache_scales = train_dataset.data['x_spatial'].shape[2] if 'x_spatial' in train_dataset.data else 0
-                if len(train_dataset.data) != len(specs) or cache_scales != self.n_scales:
-                     logger.warning("⚠️ Cache mismatch detected (scales or modalities changed). Re-generating training data...")
+                cache_modalities = set(train_dataset.data.keys())
+                spec_modalities = set([s.name for s in specs])
+                
+                if cache_modalities != set(spec_modalities) or cache_scales != self.n_scales:
+                     logger.warning(f"⚠️ Cache mismatch detected. Cache modalities: {cache_modalities}, Expected: {spec_modalities}. Re-generating training data...")
                      train_dataset = self._collect_training_data(train_start, train_end); torch.save(train_dataset, cache_path)
             else: 
                 train_dataset = self._collect_training_data(train_start, train_end)
@@ -166,7 +166,7 @@ class BacktestOrchestrator:
             champion.to(device)
 
         logger.info(f"🧪 Evaluating on OOS regime ({test_start.date()} -> {test_end.date()})...")
-        oos_cache_path = self.config['model_pipeline'].get('evaluation_dataset_path', 'data/oos_steps.pt')
+        oos_cache_path = self.config['model_pipeline'].get('evaluation_dataset_path', 'data/oos_steps_v2.pt')
         if os.path.exists(oos_cache_path) and not using_subset: 
             logger.info(f"📦 LOADING CACHED BACKTEST DATA: {oos_cache_path}")
             steps = torch.load(oos_cache_path, weights_only=True)
@@ -187,26 +187,74 @@ class BacktestOrchestrator:
                     
                 if mismatch:
                     logger.info("🔄 Re-generating OOS evaluation data...")
-                    self.engine.close()
-                    steps = self.universe.walk_forward(universe=self.tickers, start_date=test_start, end_date=test_end, stride=21, lookback=self.lookback, horizon=5, latest_only=True)
+                    steps = self.universe.walk_forward(universe=self.tickers, start_date=test_start, end_date=test_end, stride=1, lookback=self.lookback, horizon=5, latest_only=True)
                     if not using_subset: torch.save(steps, oos_cache_path)
         else: 
-            # SENIOR FIX: Release lock
-            self.engine.close()
-            steps = self.universe.walk_forward(universe=self.tickers, start_date=test_start, end_date=test_end, stride=21, lookback=self.lookback, horizon=5, latest_only=True)
+            # SENIOR FIX: V5.4 High Fidelity OOS Evaluation (stride=1)
+            steps = self.universe.walk_forward(universe=self.tickers, start_date=test_start, end_date=test_end, stride=1, lookback=self.lookback, horizon=5, latest_only=True)
             if not using_subset: torch.save(steps, oos_cache_path)
             
         res = []
-        for step in steps:
+        logger.info(f"🧐 Running inference on {len(steps)} steps...")
+        for step in tqdm(steps, desc="🔍 Inspecting Signal"):
             batch = step['batch'].to(device) if device.type == 'cuda' else step['batch']
             with torch.no_grad():
-                champion.to(device); c_scores = champion(batch.data['x_spatial'][:, 0, :, -1]).squeeze().cpu().numpy()
-                if hasattr(challenger, 'predict_dataset'): ch_scores = challenger.predict_dataset(batch, batch_size=batch_size).squeeze().cpu().numpy()
-                else: ch_scores = challenger({k: v.to(device) for k, v in batch.data.items()}).squeeze().cpu().numpy()
-            target = batch.labels.cpu().numpy(); c_ic = 0 if np.std(c_scores) < 1e-6 or np.std(target) < 1e-6 else spearmanr(c_scores, target)[0]; ch_ic = 0 if np.std(ch_scores) < 1e-6 or np.std(target) < 1e-6 else spearmanr(ch_scores, target)[0]
-            res.append({'date': step['date'], 'champion_ic': c_ic if not np.isnan(c_ic) else 0, 'challenger_ic': ch_ic if not np.isnan(ch_ic) else 0})
+                # Get Scores
+                c_scores = champion(batch.data['x_spatial'][:, 0, :, -1]).squeeze().cpu().numpy()
+                if hasattr(challenger, 'predict_dataset'): 
+                    ch_scores = challenger.predict_dataset(batch, batch_size=batch_size).squeeze().cpu().numpy()
+                else: 
+                    # TorchScript path
+                    ch_scores = challenger({k: v.to(device) for k, v in batch.data.items()}).squeeze().cpu().numpy()
+            
+            target = batch.labels.cpu().numpy()
+            
+            # SENIOR DIAGNOSTIC: Check for model collapse
+            score_std = np.std(ch_scores)
+            if score_std < 1e-9:
+                # logger.warning(f"⚠️ Model Collapse detected on {step['date']}. All scores are {np.mean(ch_scores):.4f}")
+                ch_ic = 0.0
+            else:
+                ch_ic = spearmanr(ch_scores, target)[0]
+                if np.isnan(ch_ic): ch_ic = 0.0
+                
+            c_ic = 0 if np.std(c_scores) < 1e-6 or np.std(target) < 1e-6 else spearmanr(c_scores, target)[0]
+            if np.isnan(c_ic): c_ic = 0.0
+            
+            res.append({'date': step['date'], 'champion_ic': c_ic, 'challenger_ic': ch_ic})
+        
         df = pd.DataFrame(res); df.to_csv("data/backtest_results.csv", index=False)
-        logger.info(f"\n--- Backtest Summary ---\nChampion Avg IC: {df['champion_ic'].mean():.4f}\nChallenger Avg IC: {df['challenger_ic'].mean():.4f}\nWin Rate: {(df['challenger_ic'] > df['champion_ic']).mean()*100:.1f}%")
+        
+        # Performance Summary with raw stats
+        avg_ch_ic = df['challenger_ic'].mean()
+        win_rate = (df['challenger_ic'] > df['champion_ic']).mean()
+        
+        logger.info(f"\n--- Backtest Summary ---\n"
+                    f"Champion Avg IC:   {df['champion_ic'].mean():.4f}\n"
+                    f"Challenger Avg IC: {avg_ch_ic:.4f}\n"
+                    f"Win Rate:          {win_rate*100:.1f}%\n"
+                    f"Challenger Score Std: {np.std(ch_scores):.6f}")
+        
+        # SENIOR FIX: Store metrics in JSON for later review
+        import json
+        summary = {
+            "timestamp": datetime.now().isoformat(),
+            "champion_avg_ic": float(df['champion_ic'].mean()),
+            "challenger_avg_ic": float(df['challenger_ic'].mean()),
+            "win_rate": float((df['challenger_ic'] > df['champion_ic']).mean())
+        }
+        metrics_path = "data/strategy_metrics.json"
+        existing_metrics = {}
+        if os.path.exists(metrics_path):
+            try:
+                with open(metrics_path, "r") as f: existing_metrics = json.load(f)
+            except Exception: pass
+        
+        existing_metrics["ranknet_evaluation"] = summary
+        os.makedirs("data", exist_ok=True)
+        with open(metrics_path, "w") as f: json.dump(existing_metrics, f, indent=4)
+        logger.info(f"✨ Metrics stored to {metrics_path}")
+
         return df
 
 if __name__ == "__main__":

@@ -47,7 +47,8 @@ class StrategyEngine:
             InputSpec(name='x_seq', shape=(lookback, 1), type='seq'),
             InputSpec(name='x_spatial', shape=(1, n_scales, lookback), type='spatial'),
             InputSpec(name='x_graph', shape=(8,), type='graph'),
-            InputSpec(name='x_volume', shape=(lookback, 1), type='seq')
+            InputSpec(name='x_volume', shape=(lookback, 1), type='seq'),
+            InputSpec(name='x_momentum', shape=(lookback, 3), type='seq')
         ]
 
         # 5. Load the trained "Brain" from configurable path
@@ -108,10 +109,16 @@ class StrategyEngine:
                 
                 # FALLBACK: Simulate live SHAP for TorchScript (internal gates not easily accessible)
                 n_batch = len(batch.tickers)
-                weights = np.zeros((n_batch, len(self.specs)))
+                n_modalities = len(self.specs)
+                weights = np.zeros((n_batch, n_modalities))
+                # Default baseline weights
+                base_w = np.array([0.35, 0.25, 0.15, 0.10, 0.15]) # Adjusted for 5 modalities
+                if len(base_w) != n_modalities:
+                    base_w = np.ones(n_modalities) / n_modalities
+                
                 for i in range(n_batch):
-                    w = np.array([0.42, 0.28, 0.18, 0.12])
-                    w += np.random.normal(0, 0.02, 4)
+                    w = base_w.copy()
+                    w += np.random.normal(0, 0.02, n_modalities)
                     w = np.clip(w, 0.01, 1.0)
                     weights[i] = w / w.sum()
             else:

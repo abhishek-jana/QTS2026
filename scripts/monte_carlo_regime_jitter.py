@@ -1,3 +1,5 @@
+import matplotlib
+matplotlib.use('Agg')
 import torch
 import numpy as np
 import pandas as pd
@@ -5,8 +7,6 @@ import yaml
 import os
 import sys
 import duckdb
-import matplotlib
-matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 from tqdm import tqdm
@@ -19,11 +19,7 @@ from qts_core.logger import logger
 from research_lab.alpha_universe import AlphaUniverse
 from research_lab.data_engine import DataEngine
 
-class SimulationEngineV5:
-    """
-    Expert-Grade Simulation Engine (Ferrari Edition).
-    V5.5: "Master Chief" (Unleashed Edition)
-    """
+class MonteCarloStressTest:
     def __init__(self, config_path="config.yaml"):
         with open(config_path, "r") as f:
             self.config = yaml.safe_load(f)
@@ -33,16 +29,19 @@ class SimulationEngineV5:
         self.engine = DataEngine(storage_path=self.db_path)
         self.universe = AlphaUniverse(conn=self.engine.conn, config=self.config)
         
+        # Hardware Aware
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         model_path = self.config['model_pipeline'].get('model_path', 'models/challenger_v2.pt')
-        self.model = torch.jit.load(model_path).to(self.device)
+        
+        logger.info(f"MonteCarlo: Loading RankNet to {self.device}...")
+        self.model = torch.jit.load(model_path, map_location=self.device)
         self.model.eval()
 
         self.rl_pilot = None
         rl_path = "models/rl_pilot_final.zip"
         if os.path.exists(rl_path):
             self.rl_pilot = PPO.load(rl_path, device="cpu")
-            logger.info("SimulationEngine: RL Pilot Loaded (CPU).")
+            logger.info("MonteCarlo: RL Pilot Loaded (CPU).")
             
         # Load Pre-computed Volatilities for Level 3
         vol_path = "data/rl/train_stock_vols.csv"
@@ -52,18 +51,6 @@ class SimulationEngineV5:
         else:
             logger.warning("train_stock_vols.csv not found. Falling back to constant volatility.")
             self.vols_df = None
-
-    def _get_batch_scores(self, steps):
-        logger.info(f"🚀 SimulationEngine: Pre-computing Batch Inference on {len(steps)} steps...")
-        scores_map = {}
-        for step in tqdm(steps, desc="🧠 AI Thinking"):
-            batch = step['batch'].to(self.device)
-            with torch.no_grad():
-                # SENIOR FIX: Include 'x_momentum' to prevent KeyError in TorchScript model
-                inputs = {k: v for k, v in batch.data.items() if k in ['x_seq', 'x_spatial', 'x_graph', 'x_volume', 'x_momentum']}
-                s = self.model(inputs).squeeze().cpu().numpy()
-                scores_map[step['date']] = {t: float(val) for t, val in zip(batch.tickers, s)}
-        return scores_map
 
     def _get_rl_observation(self, scores_list, nlv, cash, spy_df, current_dt, starting_capital, peak_value, portfolio_returns, hedge_qty, hedge_entry_p, score_history):
         """Prepares the 32-sensor vector - EXACT MATCH to PortfolioGym V5.2."""
@@ -80,16 +67,15 @@ class SimulationEngineV5:
         spy_mask_yesterday = spy_df['event_time'].dt.tz_localize(None) < current_dt_naive
         if not spy_mask_yesterday.any(): return np.zeros(32, dtype=np.float32)
         spy_prev = spy_df[spy_mask_yesterday].iloc[-1]
+        
         belief = np.mean(top_10) - np.mean(bot_10)
         vol = spy_prev.get('vol_21', 0.0)
         long_mv = nlv - cash
 
-        # FIX: Align short_mv calculation to use T-1 SPY close to prevent knowledge leak
-        spy_prev_close = spy_prev['close']
+        spy_prev_close = spy_df[spy_mask_yesterday].iloc[-1]['close'] if spy_mask_yesterday.any() else spy_df.iloc[0]['close']
         short_mv = (hedge_qty * spy_prev_close) if hedge_qty > 0 else 0
         current_lev = (abs(long_mv) + abs(short_mv)) / nlv if nlv > 0 else 0
-
-        # 2. STRATEGIC MACRO
+        
         vov = spy_prev.get('vov_21', 0.0) * 100.0
         ma_ratio = (spy_prev.get('ma_ratio', 1.0) - 1.0) * 10.0
         rsi = (spy_prev.get('rsi_14', 50.0) - 50.0) / 50.0
@@ -115,68 +101,64 @@ class SimulationEngineV5:
             [cash_ratio, alpha_decay, rs, dow]
         ]).astype(np.float32)
         
-        return np.nan_to_num(obs, nan=0.0, posinf=10.0, neginf=-10.0)
+        obs = np.nan_to_num(obs, nan=0.0, posinf=10.0, neginf=-10.0)
+        return np.clip(obs, -10.0, 10.0)
 
-    def run(self, start_date, end_date, max_leverage=1.0, backtest_mode=False):
-        logger.info(f"🏁 Starting REAL-WORLD Simulation: {start_date.date()} -> {end_date.date()} | Max Lev: {max_leverage}x")
-        self.engine.close()
-        steps = self.universe.walk_forward(self.tickers, start_date, end_date, stride=1, latest_only=True, backtest_mode=backtest_mode)
-        if not steps: return None
-        all_scores = self._get_batch_scores(steps)
+    def run_one_path(self, steps, spy_df, jitter_scale=0.005, crash_prob=0.001):
+        cash = 100000.0
+        positions = {} 
+        peak_value = 100000.0
+        hedge_qty = 0.0
+        hedge_entry_p = 0.0
+        portfolio_returns = []
+        score_history = []
+        history = []
         
-        conn = duckdb.connect(self.db_path, read_only=True)
-        spy_df = conn.execute(f"SELECT event_time, close FROM market_data WHERE ticker = 'SPY'").df()
-        spy_df['event_time'] = pd.to_datetime(spy_df['event_time']); spy_df = spy_df.sort_values('event_time')
-        spy_df['ret'] = spy_df['close'].pct_change()
-        spy_df['vol_21'] = spy_df['ret'].rolling(21).std()
-        spy_df['vov_21'] = spy_df['vol_21'].rolling(21).std()
-        spy_df['ma_50'] = spy_df['close'].rolling(50).mean()
-        spy_df['ma_200'] = spy_df['close'].rolling(200).mean()
-        spy_df['ma_ratio'] = spy_df['ma_50'] / spy_df['ma_200']
-        delta = spy_df['close'].diff(); gain = (delta.where(delta > 0, 0)).rolling(window=14).mean(); loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-        spy_df['rsi_14'] = 100 - (100 / (1 + (gain/loss))); spy_df = spy_df.ffill().fillna(0)
-        spy_start_p = spy_df[spy_df['event_time'].dt.tz_localize(None) >= start_date.replace(tzinfo=None)].iloc[0]['close']
-        conn.close()
-        
-        self.last_steps = steps
-        self.last_spy_df = spy_df
-
-        cash = 100000.0; positions = {}; price_cache = {}; starting_capital = 100000.0; peak_value = 100000.0; hedge_qty = 0.0; hedge_entry_p = 0.0
-        results_log = []; portfolio_returns = []; score_history = []
-
         for i in range(len(steps)):
             curr_step = steps[i]; dt = curr_step['date']; batch = curr_step['batch']
-            for t in batch.tickers: price_cache[t] = float(batch.data['raw_price'][batch.tickers.index(t)])
-            pos_mv = sum([q * price_cache.get(t, 0.0) for t, q in positions.items()])
-            spy_p = price_cache.get('SPY', spy_df[spy_df['event_time'].dt.tz_localize(None) <= dt.replace(tzinfo=None)]['close'].iloc[-1])
+            crash_multiplier = 0.95 if np.random.random() < crash_prob else 1.0
+            
+            prices = {t: float(batch.data['raw_price'][batch.tickers.index(t)]) * crash_multiplier for t in batch.tickers}
+            pos_mv = sum(q * prices.get(t, 0) for t, q in positions.items())
+            spy_p = prices.get('SPY', spy_df[spy_df['event_time'].dt.tz_localize(None) <= dt.replace(tzinfo=None)]['close'].iloc[-1])
             hedge_pnl = hedge_qty * (hedge_entry_p - spy_p) if hedge_qty > 0 else 0.0
-            nlv = cash + pos_mv + hedge_pnl; peak_value = max(peak_value, nlv)
-            if i > 0: portfolio_returns.append((nlv - results_log[-1]['NLV']) / results_log[-1]['NLV'])
+            
+            nlv = cash + pos_mv + hedge_pnl
+            peak_value = max(peak_value, nlv)
+            if i > 0: portfolio_returns.append((nlv - history[-1]) / history[-1])
 
-            scores_dict = all_scores.get(dt, {})
+            with torch.no_grad():
+                inputs = {k: v.to(self.device) for k, v in batch.data.items() if k in ['x_seq', 'x_spatial', 'x_graph', 'x_volume', 'x_momentum']}
+                raw_scores = self.model(inputs).squeeze().cpu().numpy()
+                if raw_scores.ndim == 0: raw_scores = np.array([raw_scores.item()])
+                scores = raw_scores + np.random.normal(0, jitter_scale, len(raw_scores))
+                scores_dict = {t: float(val) for t, val in zip(batch.tickers, scores)}
+
             obs_scores = [scores_dict.get(t, 0.0) for t in self.tickers]
             score_history.append(obs_scores)
-            obs = self._get_rl_observation(obs_scores, nlv, cash, spy_df, dt, starting_capital, peak_value, portfolio_returns, hedge_qty, hedge_entry_p, score_history)
-            
+
             if self.rl_pilot:
+                obs = self._get_rl_observation(obs_scores, nlv, cash, spy_df, dt, 100000.0, peak_value, portfolio_returns, hedge_qty, hedge_entry_p, score_history)
                 action, _ = self.rl_pilot.predict(obs, deterministic=True)
                 _, hedge_ratio, concentration_idx = action
                 target_lev = 1.0
-                if i < 3: logger.debug(f"STEP {i} | Obs Sum: {np.sum(obs):.2f} | Act: Lev={target_lev:.2f}, Hedge={hedge_ratio:.2f}")
                 total_gross = float(target_lev) + float(hedge_ratio)
                 if total_gross > 1.0:
-                    scale = 1.0 / total_gross; target_lev = float(target_lev) * scale; hedge_ratio = float(hedge_ratio) * scale
+                    scale = 1.0 / total_gross
+                    target_lev = float(target_lev) * scale
+                    hedge_ratio = float(hedge_ratio) * scale
                 concentration = [5, 8, 12][int(np.clip(concentration_idx, 0, 2.999))]
-            else: target_lev = 1.0; hedge_ratio = 0.0; concentration = 5 
+            else:
+                target_lev = 1.0; hedge_ratio = 0.0; concentration = 5 
             
             if dt.weekday() == 0:
-                target_notional = (nlv * target_lev)
-                top_picks = sorted(scores_dict.keys(), key=lambda x: scores_dict.get(x, -9), reverse=True)[:concentration]
+                friction = np.random.uniform(0.0010, 0.0025)
+                target_notional = nlv * target_lev
+                top_picks = sorted(scores_dict.keys(), key=lambda x: scores_dict[x], reverse=True)[:concentration]
                 
                 # LEVEL 2/3: Sizing Logic
                 top_scores = np.array([scores_dict.get(x, -9) for x in top_picks])
-                # SENIOR FIX (V5.7): Lower Temperature to 0.5 to increase conviction in outliers
-                temperature = 0.5
+                temperature = 2.0
                 exp_scores = np.exp((top_scores - np.max(top_scores)) / temperature)
                 conviction_weights = exp_scores / np.sum(exp_scores)
                 
@@ -200,28 +182,73 @@ class SimulationEngineV5:
                 weights = weights / np.sum(weights)
 
                 turnover_notional = 0.0
+
                 for t in list(positions.keys()):
-                    if t not in top_picks: v = positions[t] * price_cache.get(t, 0.0); cash += v; turnover_notional += v; del positions[t]
+                    if t not in top_picks:
+                        v = positions[t] * prices.get(t, 0); cash += v; turnover_notional += v; del positions[t]
+
                 for idx_w, t in enumerate(top_picks):
-                    p = price_cache.get(t, 0.0)
+                    p = prices.get(t, 0)
                     if p > 0:
-                        t_qty = int((target_notional * weights[idx_w]) / p); d_qty = t_qty - positions.get(t, 0); t_v = d_qty * p
-                        cash -= t_v; turnover_notional += abs(t_v); positions[t] = t_qty
-                
+                        target_qty = int((target_notional * weights[idx_w]) / p)
+                        diff_qty = target_qty - positions.get(t, 0)
+                        trade_v = diff_qty * p; cash -= trade_v; turnover_notional += abs(trade_v); positions[t] = target_qty
+
                 cash += hedge_pnl
                 new_hedge_qty = (nlv * hedge_ratio) / spy_p if spy_p > 0 else 0
-                # SENIOR FIX: Add hedge turnover to friction calculation for simulation consistency
-                turnover_notional += abs(new_hedge_qty - hedge_qty) * spy_p
+                turnover_notional += abs((new_hedge_qty - hedge_qty) * spy_p)
                 hedge_qty = new_hedge_qty; hedge_entry_p = spy_p
-                
                 # SENIOR FIX: Institutional friction 5bps (0.0005)
                 cash -= turnover_notional * 0.0005 
 
-            results_log.append({"Date": dt, "NLV": nlv, "Lev": float(target_lev), "Hedge": float(hedge_ratio), "Conc": concentration, "SPY_NLV": (spy_p / spy_start_p) * 100000.0})
+            history.append(nlv)
+        return history
 
-        df = pd.DataFrame(results_log)
-        plt.figure(figsize=(15, 8), facecolor='#0D1117'); ax = plt.gca(); ax.set_facecolor('#0D1117')
-        plt.plot(df['Date'], df['NLV'], color='#2ecc71', lw=3, label='RL Strategy'); plt.plot(df['Date'], df['SPY_NLV'], color='#bdc3c7', ls='--', label='SPY Benchmark')
-        plt.title("UQTS-2026 Strategy V5.5: Master Chief (Unleashed)", color='white', fontsize=14); plt.grid(True, alpha=0.2); plt.legend(); plt.savefig("data/simulation_performance.png"); plt.close()
-        logger.success(f"Simulation finished. Final Capital: ${nlv:,.2f}. Plot saved.")
-        return df
+    def run_simulation(self, n_paths=20, backtest_mode=False, steps=None, spy_df=None):
+        logger.info(f"🎲 Initiating Monte Carlo Stress Test: {n_paths} Synthetic Regimes...")
+        start_date = datetime(2024, 1, 1); end_date = datetime.now() - timedelta(days=1)
+        
+        if steps is None:
+            steps = self.universe.walk_forward(self.tickers, start_date, end_date, stride=1, latest_only=True, backtest_mode=backtest_mode)
+        if not steps: return
+        
+        if spy_df is None:
+            conn = duckdb.connect(self.db_path, read_only=True)
+            spy_df = conn.execute(f"SELECT event_time, close FROM market_data WHERE ticker = 'SPY'").df()
+            spy_df['event_time'] = pd.to_datetime(spy_df['event_time']); spy_df = spy_df.sort_values('event_time')
+            spy_df['ret'] = spy_df['close'].pct_change()
+            spy_df['vol_21'] = spy_df['ret'].rolling(21).std()
+            spy_df['vov_21'] = spy_df['vol_21'].rolling(21).std()
+            spy_df['ma_50'] = spy_df['close'].rolling(50).mean()
+            spy_df['ma_200'] = spy_df['close'].rolling(200).mean()
+            spy_df['ma_ratio'] = spy_df['ma_50'] / spy_df['ma_200']
+            delta = spy_df['close'].diff(); gain = (delta.where(delta > 0, 0)).rolling(window=14).mean(); loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+            spy_df['rsi_14'] = 100 - (100 / (1 + (gain/loss))); spy_df = spy_df.ffill().fillna(0); conn.close()
+        
+        all_paths = []
+        for i in range(n_paths):
+            logger.info(f"Simulation Path {i+1}/{n_paths}..."); all_paths.append(self.run_one_path(steps, spy_df))
+            
+        all_paths = np.array(all_paths)
+        plt.figure(figsize=(12, 7), facecolor='#050505'); ax = plt.gca(); ax.set_facecolor('#050505')
+        dates = [s['date'] for s in steps]
+        for path in all_paths: plt.plot(dates, path, color='#10b981', alpha=0.15, lw=1)
+        mean_path = np.mean(all_paths, axis=0); plt.plot(dates, mean_path, color='#10b981', lw=3, label='Monte Carlo Mean')
+        spy_start = spy_df[spy_df['event_time'].dt.tz_localize(None) >= start_date.replace(tzinfo=None)].iloc[0]['close']
+        spy_slice = spy_df[(spy_df['event_time'].dt.tz_localize(None) >= start_date.replace(tzinfo=None)) & (spy_df['event_time'].dt.tz_localize(None) <= end_date.replace(tzinfo=None))]
+        spy_line = (spy_slice['close'] / spy_start) * 100000
+        plt.plot(spy_slice['event_time'], spy_line, color='#475569', ls='--', label='SPY Benchmark')
+        plt.title("UQTS-2026 V5.0 Monte Carlo Stress Test", color='white', fontweight='black'); plt.legend(); plt.grid(True, alpha=0.1); plt.savefig("data/monte_carlo_robustness.png")
+        plt.close()
+        logger.success("✅ Monte Carlo Stress Test Complete. Plot saved to data/monte_carlo_robustness.png")
+        logger.info(f"Mean Final NLV: ${mean_path[-1]:,.2f} | Worst Case (Min): ${np.min(all_paths[:,-1]):,.2f}")
+
+if __name__ == "__main__":
+    # SENIOR FIX: Default seed for standalone execution
+    np.random.seed(42)
+    import random
+    random.seed(42)
+    torch.manual_seed(42)
+    
+    test = MonteCarloStressTest()
+    test.run_simulation(n_paths=20)
