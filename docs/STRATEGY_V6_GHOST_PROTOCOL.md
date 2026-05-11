@@ -73,4 +73,26 @@ If the V5.8.9 Multi-Modal RankNet fails to break a sustained `0.05 IC` on the ev
 3.  **Inject:** Deploy the `SkewAwareTransformer` class utilizing `RMSNorm`, `SwiGLU`, and `Sparsemax`.
 4.  **Train:** Train with Asymmetric Log-Cosh loss.
 
+## 5. The Clinical Verification Protocol: "The Doctor"
+**The Junior Mistake:** Training blindly without environmental or data-quality checks.
+*   *Why it fails:* Silent OOMs, DuckDB lock contention, and signal-less datasets lead to wasted GPU hours and non-deterministic results.
+
+**The Director's Solution:** Automated Pipeline Diagnostics (`doctor.py`).
+Before every training run, the system must pass a "Full Clinical Audit" via the specialized CLI.
+
+### A. Infrastructure Audit (`python doctor.py infra`)
+*   **RAM Saturation**: Prevents OOM kills before data extraction.
+*   **GPU/CUDA Check**: Ensures bit-accurate training on silicon, not emulated CPU.
+*   **Zombie Reaper**: Proactively evicts stale DuckDB handles to prevent IO contention.
+
+### B. Data Integrity Audit (`python doctor.py data`)
+*   **Density Check**: Scans for bitemporal gaps in the most recent 30-day window.
+*   **Skew Audit**: Snapshot of peak regimes (e.g., Jan 2024) to verify that the "Growth Hunter" labels possess the required right-tail skew for outlier detection.
+
+### C. Model Health Audit (`python doctor.py model`)
+*   **Architectural Variance**: Verifies that initial weight distributions produce non-zero standard deviation in scores (preventing instant Model Collapse).
+*   **Gradient Flow**: Performs a dummy backprop to detect vanishing gradients or NaNs within the SwiGLU/Power-Scaled Attention layers before the full run.
+
+---
+
 *We are no longer predicting the market. We are hunting the anomalies.*

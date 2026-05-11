@@ -7,7 +7,7 @@ import argparse
 from datetime import datetime, timedelta
 from qts_core.logger import logger
 from research_lab.alpha_universe import AlphaUniverse, MultiModalBatch
-from research_lab.alpha_ranker import RankNet, MultiModalRankNet, InputSpec
+from research_lab.alpha_ranker import RankNet, SkewAwareTransformer, InputSpec
 from research_lab.real_data_ingestor import InstitutionalIngestor
 from research_lab.data_engine import DataEngine
 from scipy.stats import spearmanr
@@ -82,7 +82,8 @@ class BacktestOrchestrator:
             elif p.name == 'x_momentum': specs.append(InputSpec(name='x_momentum', shape=(self.lookback, 3), type='seq'))
 
         champion = RankNet(input_dim=self.n_scales, hidden_dim=hidden_dim)
-        challenger = MultiModalRankNet(specs=specs, hidden_dim=hidden_dim, vit_heads=vh, gnn_layers=gl, dropout=do)
+        # SENIOR FIX (V6.0): Inject the Ghost Protocol Transformer as the Challenger
+        challenger = SkewAwareTransformer(specs=specs, embed_dim=hidden_dim, depth=4, heads=vh)
         
         using_subset = len(self.tickers) < 50
         from datetime import datetime as dt_class
@@ -196,6 +197,11 @@ class BacktestOrchestrator:
             
         res = []
         logger.info(f"🧐 Running inference on {len(steps)} steps...")
+        # Ensure all models are on the SAME device before the loop starts
+        champion.to(device)
+        # Handle both TorchScript and Python challenger models
+        if hasattr(challenger, 'to'): challenger.to(device)
+        
         for step in tqdm(steps, desc="🔍 Inspecting Signal"):
             batch = step['batch'].to(device) if device.type == 'cuda' else step['batch']
             with torch.no_grad():
@@ -250,7 +256,7 @@ class BacktestOrchestrator:
                 with open(metrics_path, "r") as f: existing_metrics = json.load(f)
             except Exception: pass
         
-        existing_metrics["ranknet_evaluation"] = summary
+        existing_metrics["signal_evaluation"] = summary
         os.makedirs("data", exist_ok=True)
         with open(metrics_path, "w") as f: json.dump(existing_metrics, f, indent=4)
         logger.info(f"✨ Metrics stored to {metrics_path}")

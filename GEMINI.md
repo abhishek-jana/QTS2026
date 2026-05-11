@@ -50,10 +50,11 @@ This is a single-context repository. See `docs/agents/domain.md`.
 
 ## CLI Usage
 
-### 1. RankNet Pipeline (The Stock Picker)
-- `python run.py ranknet ingest`: Ingest historical data for the full universe.
-- `python run.py ranknet train`: Train the Supervised RankNet on 5-year historical data.
-- `python run.py ranknet eval`: Compare RankNet performance against baselines.
+### 1. Signal Pipeline (The Stock Picker)
+- `python run.py signal ingest`: Ingest historical data for the full universe.
+- `python run.py signal train`: Train the Supervised Ghost Protocol Transformer on 5-year historical data.
+- `python run.py signal eval`: Compare Signal performance against baselines.
+- `python run.py signal test-subset`: Run rapid verification on SPY, NVDA, and TSM.
 
 ### 2. RL Pipeline (The Macro Allocator)
 - `python run.py rl data`: Pre-compute 32-sensor training data for RL.

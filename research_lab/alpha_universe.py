@@ -100,8 +100,17 @@ class AlphaUniverse:
         Replaces boolean masking with O(1) shard lookups.
         """
         lookback = lookback or self.lookback
-        if shard_override is None: return None
         
+        # SENIOR FIX: Support standalone calls (e.g. for doctor.py or UI)
+        if shard_override is None:
+            total_window = lookback + self.padding
+            days_back = max(total_window + 10, 100)
+            fetch_start = as_of - timedelta(days=days_back)
+            batch_view = self.get_batch_pit_view(tickers, as_of, start_time=fetch_start)
+            if batch_view.empty: return None
+            # Temporary sharding
+            shard_override = {t: batch_view[batch_view['ticker'] == t] for t in tickers}
+            
         final_labels_df = labels_override
         fused_data = {p.name: [] for p in self.plugins}; fused_data['raw_price'] = []
         y_list, final_tickers, final_times = [], [], []
@@ -110,21 +119,31 @@ class AlphaUniverse:
             if ticker not in shard_override: continue
             full_ticker_data = shard_override[ticker]
             
-            # SENIOR FIX: Alignment handling for Intraday vs Daily
-            # We look for the latest available bar that is <= as_of
             ticker_slice_all = full_ticker_data[full_ticker_data.index <= as_of]
             if len(ticker_slice_all) < lookback: continue
             
-            # The 'actual_as_of' is the last bar time in this stock's history
             actual_as_of = ticker_slice_all.index[-1]
             ticker_slice = ticker_slice_all.tail(lookback + 5)
             
-            # Generate features
             ticker_features = {p.name: p.transform(ticker_slice, lookback) for p in self.plugins}
             
-            # Pull pre-computed label using the ACTUAL bar time
-            ticker_labels = final_labels_df[ticker] if ticker in final_labels_df.columns else pd.Series(dtype=float)
-            label_val = ticker_labels.get(actual_as_of, np.nan)
+            if final_labels_df is None:
+                # Local label computation for standalone calls
+                from research_lab.alpha_labeler import AlphaLabeler
+                if not self.labeler: self.labeler = AlphaLabeler()
+                # Use a small window for local labels
+                label_limit = as_of + timedelta(days=self.horizon * 2)
+                local_data = self.get_batch_pit_view([ticker, 'SPY'], label_limit, start_time=as_of - timedelta(days=5))
+                if local_data.empty: continue
+                local_returns = self.labeler.generate_labels(local_data, horizon=self.horizon, timeframe=self.timeframe)
+                if 'SPY' in local_returns.columns: excess = local_returns[ticker] - local_returns['SPY']
+                else: excess = local_returns[ticker]
+                
+                # SENIOR V6.3 FIX: Rectified Local Labels
+                label_val = max(0.0, float(excess.get(actual_as_of, np.nan)))
+            else:
+                ticker_labels = final_labels_df[ticker] if ticker in final_labels_df.columns else pd.Series(dtype=float)
+                label_val = ticker_labels.get(actual_as_of, np.nan)
             
             if np.isnan(label_val): continue
             
@@ -152,34 +171,31 @@ class AlphaUniverse:
         data_fetch_limit = end_date + timedelta(days=self.horizon * 2)
         fetch_start = start_date - timedelta(days=total_window + 30)
         
-        # 1. Fetch entire history once
         all_history = self.get_batch_pit_view(universe, data_fetch_limit, start_time=fetch_start)
         if all_history.empty: return []
             
-        # 2. Pre-compute Labels (Vectorized)
         raw_returns = self.labeler.generate_labels(all_history, horizon=self.horizon, timeframe=self.timeframe)
         if 'SPY' in raw_returns.columns: excess = raw_returns.sub(raw_returns['SPY'], axis=0)
         else: excess = raw_returns.sub(raw_returns.mean(axis=1), axis=0)
+        
+        # SENIOR V6.3 FIX: Rectified "Growth Hunter" Targets
+        # Force the model to only care about positive alpha. Negative alpha is noise.
+        excess = excess.clip(lower=0.0)
         self.precomputed_labels = self.labeler.apply_z_score(excess)
         
-        # 3. Create Shards
         shards = {t: all_history[all_history['ticker'] == t].copy() for t in universe}
         del all_history 
         gc.collect()
 
-        # 4. Determine dates (Process at the end of each day for the most info)
-        # We process at 16:00 (Market Close) for every day in the range.
         dates = []
         curr = start_date.replace(hour=16, minute=0, second=0, microsecond=0)
         while curr <= end_date.replace(hour=16, minute=0, second=0, microsecond=0):
-            # Only process if it's a weekday
             if curr.weekday() < 5:
                 dates.append(curr)
             curr += timedelta(days=stride)
             
         logger.info(f"🚀 Sharded Loop starting. Total tasks: {len(dates)}")
 
-        # 5. Fast Serial Loop
         for d in tqdm(dates, desc="🏗️ Building Dataset"):
             batch = self.snapshot(as_of=d, tickers=universe, lookback=self.lookback, 
                                  labels_override=self.precomputed_labels,

@@ -7,7 +7,7 @@ data_engine:
   storage_path: data/uqts_v2_intraday.ddb
   timeframe: 15Min
 execution_muscle:
-  max_position_size: 0.15
+  max_position_size: 0.10
   min_belief_threshold: 0.65
   risk_parity_sizing: true
   mpc_solver:
@@ -38,7 +38,7 @@ model_pipeline:
     validation_split_pct: 0.15
     temporal_decay_lambda: 0.0025
   training:
-    batch_size: 4096
+    batch_size: 512
     dropout: 0.3
     early_stopping_patience: 15
     epochs: 100

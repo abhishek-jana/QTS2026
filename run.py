@@ -75,57 +75,64 @@ def main():
     except Exception:
         default_steps = 1000000
 
-    # --- 1. RankNet Pipeline (Stock Picker) ---
-    ranknet_parser = subparsers.add_parser("ranknet", help="Supervised Stock Picker")
-    ranknet_sub = ranknet_parser.add_subparsers(dest="subcommand")
-    ranknet_sub.add_parser("ingest")
-    ranknet_sub.add_parser("train")
-    ranknet_sub.add_parser("eval")
+    # --- 1. Signal Pipeline (The Brain / Prediction Engine) ---
+    signal_parser = subparsers.add_parser("signal", help="Supervised Signal Extraction (e.g. Ghost Protocol Transformer)")
+    signal_sub = signal_parser.add_subparsers(dest="subcommand")
+    signal_sub.add_parser("ingest", help="Ingest historical market data")
+    signal_sub.add_parser("train", help="Train the signal extraction model")
+    signal_sub.add_parser("eval", help="Evaluate signal accuracy (IC/WinRate)")
 
-    # --- 2. RL Pipeline (Macro Allocator) ---
-    rl_parser = subparsers.add_parser("rl", help="Reinforcement Learning")
+    # --- 2. RL Pipeline (The General / Allocation Engine) ---
+    rl_parser = subparsers.add_parser("rl", help="Reinforcement Learning Allocation")
     rl_sub = rl_parser.add_subparsers(dest="subcommand")
-    rl_sub.add_parser("data")
+    rl_sub.add_parser("data", help="Pre-compute training data for RL")
     train_parser = rl_sub.add_parser("train")
     train_parser.add_argument("--steps", type=int, default=default_steps)
-    rl_sub.add_parser("eval")
+    rl_sub.add_parser("eval", help="Unified portfolio evaluation")
 
     # --- 3. Full Pipeline ---
-    full_parser = subparsers.add_parser("full", help="Complete sequential pipeline")
+    full_parser = subparsers.add_parser("full", help="Execute complete Signal -> RL pipeline")
     full_parser.add_argument("--steps", type=int, default=default_steps)
 
     # --- 4. Operations ---
-    subparsers.add_parser("prod")
-    subparsers.add_parser("live")
-    subparsers.add_parser("ui")
+    subparsers.add_parser("prod", help="Launch Production Inference Worker")
+    subparsers.add_parser("live", help="Launch Live Paper Trading Worker")
+    subparsers.add_parser("ui", help="Launch Mission Control Cockpit")
 
     args = parser.parse_args()
 
     # SENIOR DEV LOGIC: Always be reproducible, always be clean.
     set_seed(args.seed)
-    if args.command in ["full", "ranknet", "rl"]:
+    if args.command in ["full", "signal", "rl"]:
         cleanup_zombie_locks()
 
     # --- ROUTING ---
 
     if args.command == "full":
-        logger.info("🚀 EXECUTING FULL PRODUCTION SUITE (V5.8 GROWTH HUNTER)")
+        logger.info("🚀 EXECUTING FULL PRODUCTION SUITE (V6.0 GHOST PROTOCOL)")
         from research_lab.backtest_comparison import BacktestOrchestrator
         orch = BacktestOrchestrator()
         tf = orch.config['model_pipeline']['timeframes']
+        
+        logger.info("--- PHASE 1: SIGNAL EXTRACTION ---")
         orch.run_comparison(parse_date(tf['train_start']), parse_date(tf['train_end']),
                            parse_date(tf['test_start']), parse_date(tf['test_end']))
         
+        logger.info("--- PHASE 2: SENSOR DATA PRE-COMPUTATION ---")
         from scripts.precompute_rl_data import precompute_rl_data
         precompute_rl_data()
         
+        logger.info("--- PHASE 3: ALLOCATION POLICY TRAINING ---")
         from scripts.train_rl_pilot import train_rl_pilot
         train_rl_pilot(total_timesteps=args.steps)
         
+        logger.info("--- PHASE 4: UNIFIED SYSTEM EVALUATION ---")
         from scripts.rl_evaluator import run_rl_evaluation
         run_rl_evaluation()
+        
+        logger.success("🏁 GHOST PROTOCOL PIPELINE COMPLETED.")
 
-    elif args.command == "ranknet":
+    elif args.command == "signal":
         from research_lab.backtest_comparison import BacktestOrchestrator
         orch = BacktestOrchestrator()
         if args.subcommand == "ingest": orch.run_ingestion()
@@ -137,6 +144,14 @@ def main():
             tf = orch.config['model_pipeline']['timeframes']
             orch.run_comparison(parse_date(tf['train_start']), parse_date(tf['train_end']),
                                parse_date(tf['test_start']), parse_date(tf['test_end']), skip_train=True)
+        elif args.subcommand == "test-subset":
+            from research_lab.backtest_comparison import BacktestOrchestrator
+            orch = BacktestOrchestrator(tickers=["SPY", "NVDA", "TSM"])
+            tf = orch.config['model_pipeline']['timeframes']
+            import datetime as dt
+            clean_train_end = parse_date(tf['train_end']) - dt.timedelta(days=5)
+            orch.run_comparison(parse_date(tf['train_start']), clean_train_end,
+                               parse_date(tf['test_start']), parse_date(tf['test_end']), skip_train=False)
 
     elif args.command == "rl":
         if args.subcommand == "data":
