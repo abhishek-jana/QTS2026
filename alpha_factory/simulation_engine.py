@@ -173,8 +173,13 @@ class SimulationEngineV5:
             
             if should_rebalance:
                 target_notional = (nlv * target_lev); top_picks = sorted(scores_dict.keys(), key=lambda x: scores_dict.get(x, -9), reverse=True)[:concentration]
-                top_scores = np.array([scores_dict.get(x, -9) for x in top_picks]); exp_scores = np.exp((top_scores - np.max(top_scores)) / 0.5)
-                weights = exp_scores / (np.sum(exp_scores) + 1e-9); weights = np.clip(weights, 0.0, 1.0); weights = weights / (np.sum(weights) + 1e-9)
+                
+                # --- SENIOR FIX: CONVICTION SIZING (100x SCALE) ---
+                top_scores = np.array([scores_dict.get(x, -9) for x in top_picks]) * 100.0
+                exp_scores = np.exp((top_scores - np.max(top_scores)) / 0.5)
+                weights = exp_scores / (np.sum(exp_scores) + 1e-9)
+                
+                weights = np.clip(weights, 0.0, 1.0); weights = weights / (np.sum(weights) + 1e-9)
                 turnover_notional = 0.0
                 for t in list(positions.keys()):
                     if t not in top_picks: v = positions[t] * price_cache.get(t, 0.0); cash += v; turnover_notional += v; del positions[t]

@@ -155,7 +155,8 @@ class MonteCarloStressTest:
 
             if should_rebalance:
                 target_notional = (nlv * last_lev); top_picks = sorted(scores_dict.keys(), key=lambda x: scores_dict[x], reverse=True)[:last_conc]
-                top_scores = np.array([scores_dict.get(x, -9) for x in top_picks]); exp_scores = np.exp((top_scores - np.max(top_scores)) / 0.5)
+                top_scores = np.array([scores_dict.get(x, -9) for x in top_picks]) * 100.0
+                exp_scores = np.exp((top_scores - np.max(top_scores)) / 0.5)
                 weights = np.clip(exp_scores / (np.sum(exp_scores) + 1e-9), 0.0, 1.0); weights = weights / (np.sum(weights) + 1e-9)
                 fric = 0.0050 if is_jump and jump_multiplier < 1.0 else 0.0005
                 turnover = 0.0; trade_prices = prices * jump_multiplier
