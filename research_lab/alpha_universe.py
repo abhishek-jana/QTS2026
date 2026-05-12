@@ -129,7 +129,8 @@ class AlphaUniverse:
                 # Local computation if no override provided (for testing)
                 from research_lab.alpha_labeler import AlphaLabeler
                 if not self.labeler: self.labeler = AlphaLabeler()
-                label_limit = as_of + timedelta(days=self.horizon + 2)
+                # Increase label_limit to handle weekends/holidays (Sniper V7.4.3 Fix)
+                label_limit = as_of + timedelta(days=self.horizon + 12)
                 local_data = self.get_batch_pit_view([ticker, 'SPY'], label_limit, start_time=as_of - timedelta(days=1))
                 if local_data.empty: continue
                 local_returns = self.labeler.generate_labels(local_data, horizon_days=self.horizon, timeframe=self.timeframe)

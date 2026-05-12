@@ -191,7 +191,10 @@ class SimulationEngineV5:
                             t_v = (t_qty - c_qty) * p; cash -= t_v; turnover_notional += abs(t_v); positions[t] = t_qty
                 cash -= turnover_notional * 0.0005
 
-            history.append({"Date": dt, "NLV": nlv, "Lev": (nlv-cash)/nlv if nlv > 0 else 0, "Conc": concentration, "SPY_NLV": (spy_p / spy_start_p) * 100000})
+            spy_nlv = (spy_p / spy_start_p) * 100000
+            if i % 20 == 0 or i == len(steps) - 1:
+                logger.debug(f"[{dt.date()}] NLV: ${nlv:,.2f} | SPY: ${spy_nlv:,.2f} | Positions: {len(positions)} | Target Lev: {target_lev}x")
+            history.append({"Date": dt, "NLV": nlv, "Lev": (nlv-cash)/nlv if nlv > 0 else 0, "Conc": concentration, "SPY_NLV": spy_nlv})
 
         df = pd.DataFrame(history)
         logger.success(f"Simulation finished. Final Capital: ${nlv:,.2f}."); return df

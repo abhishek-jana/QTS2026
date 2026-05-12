@@ -17,7 +17,8 @@ class ConnectionManager:
 
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
-        self.active_connections[websocket] = None # No subscription yet
+        # Default focus ticker to SPY on connect
+        self.active_connections[websocket] = 'SPY'
         print(f"📡 NEW CLIENT CONNECTED: {websocket.client.host if websocket.client else 'unknown'}")
         print(f"📊 ACTIVE CONNECTIONS: {len(self.active_connections)}")
 

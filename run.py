@@ -7,7 +7,8 @@ import random
 import numpy as np
 import torch
 from datetime import datetime
-from qts_core.logger import logger
+from qts_core.logger import setup_logger
+logger = setup_logger(level="DEBUG")
 from dotenv import load_dotenv
 
 # SENIOR DEV PATTERN: Programmatic Path Discovery & Env Loading

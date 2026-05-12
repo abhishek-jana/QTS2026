@@ -35,9 +35,7 @@ class AlphaLabeler:
         else:
             shift_bars = horizon_days
             
-        logger.debug(f"Labeling Engine: Using {horizon_days}-day horizon ({shift_bars} bars for {timeframe}). Mode: {self.mode}")
-
-        # Calculate forward log-returns: ln(P_{t+N} / P_t)
+        # f-returns calculation
         f_returns = np.log(wide_price.shift(-shift_bars) / wide_price)
         
         if self.mode == 'directional':

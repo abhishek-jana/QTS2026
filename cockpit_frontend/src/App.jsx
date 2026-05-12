@@ -28,12 +28,76 @@ class ErrorBoundary extends React.Component {
 
 // --- Components ---
 
+const TICKER_NAMES = {
+  "SPY": "S&P 500 ETF Trust",
+  "AAPL": "Apple Inc.",
+  "MSFT": "Microsoft Corp.",
+  "NVDA": "NVIDIA Corp.",
+  "GOOGL": "Alphabet Inc. (Cl A)",
+  "AMZN": "Amazon.com Inc.",
+  "META": "Meta Platforms Inc.",
+  "TSLA": "Tesla Inc.",
+  "LLY": "Eli Lilly & Co.",
+  "UNH": "UnitedHealth Group",
+  "JPM": "JPMorgan Chase & Co.",
+  "V": "Visa Inc.",
+  "MA": "Mastercard Inc.",
+  "AVGO": "Broadcom Inc.",
+  "HD": "Home Depot Inc.",
+  "PG": "Procter & Gamble",
+  "COST": "Costco Wholesale",
+  "JNJ": "Johnson & Johnson",
+  "ABBV": "AbbVie Inc.",
+  "MRK": "Merck & Co.",
+  "BAC": "Bank of America",
+  "CRM": "Salesforce Inc.",
+  "ORCL": "Oracle Corp.",
+  "ADBE": "Adobe Inc.",
+  "AMD": "Advanced Micro Devices",
+  "PEP": "PepsiCo Inc.",
+  "KO": "Coca-Cola Co.",
+  "TMO": "Thermo Fisher Scientific",
+  "WMT": "Walmart Inc.",
+  "MCD": "McDonald's Corp.",
+  "CSCO": "Cisco Systems",
+  "NFLX": "Netflix Inc.",
+  "ABT": "Abbott Laboratories",
+  "DHR": "Danaher Corp.",
+  "WFC": "Wells Fargo & Co.",
+  "ACN": "Accenture plc",
+  "QCOM": "Qualcomm Inc.",
+  "LIN": "Linde plc",
+  "GE": "General Electric",
+  "PM": "Philip Morris Int.",
+  "TXN": "Texas Instruments",
+  "INTU": "Intuit Inc.",
+  "AMGN": "Amgen Inc.",
+  "VZ": "Verizon Communications",
+  "AMAT": "Applied Materials",
+  "UNP": "Union Pacific Corp.",
+  "LOW": "Lowe's Companies",
+  "BX": "Blackstone Inc.",
+  "GS": "Goldman Sachs Group",
+  "ISRG": "Intuitive Surgical",
+  "HON": "Honeywell Int.",
+  "MS": "Morgan Stanley",
+  "CVS": "CVS Health Corp.",
+  "COP": "ConocoPhillips",
+  "IBM": "IBM Corp.",
+  "BA": "Boeing Co.",
+  "SPGI": "S&P Global Inc.",
+  "CAT": "Caterpillar Inc.",
+  "LMT": "Lockheed Martin",
+  "RTX": "Raytheon Technologies"
+};
+
 const PriceChart = ({ data, ticker }) => {
   const chartContainerRef = useRef(); 
   const chartRef = useRef(); 
   const seriesRef = useRef();
   const [range, setRange] = useState('ALL');
   const ranges = [
+    { label: '1D', val: 24 * 3600 },
     { label: '1W', val: 7 * 24 * 3600 },
     { label: '1M', val: 30 * 24 * 3600 },
     { label: '3M', val: 90 * 24 * 3600 },
@@ -503,7 +567,14 @@ export default function MissionControl() {
              <div className="flex flex-col"><span className="text-[8px] text-slate-400 uppercase font-black tracking-tighter tabular-nums font-bold">Event Horizon</span><span className="text-xs font-bold text-slate-100 tabular-nums">{globalData?.timestamp || 'OFFLINE'}</span></div>
              <div className="flex gap-4 border-l border-slate-800/60 pl-6 h-full items-center">
                  <div className="flex flex-col text-center"><span className="text-[8px] text-slate-400 uppercase font-black tracking-tighter font-bold">Net Liq</span><span className="text-xs font-black text-emerald-500 tabular-nums">${(inst.capital || 0).toLocaleString()}</span></div>
-                 <div className="flex flex-col border-l border-slate-800/40 pl-4 text-center"><span className="text-[8px] text-slate-400 uppercase font-black tracking-tighter font-bold">BP</span><span className="text-xs font-black text-cyan-500 tabular-nums">${(inst.buying_power || 0).toLocaleString()}</span></div>
+                 <div className="flex flex-col border-l border-slate-800/40 pl-4 text-center">
+                    <span className="text-[8px] text-slate-400 uppercase font-black tracking-tighter font-bold">
+                        {inst.buying_power < 0 ? 'Margin' : 'BP'}
+                    </span>
+                    <span className={`text-xs font-black tabular-nums ${inst.buying_power < 0 ? 'text-rose-500' : 'text-cyan-500'}`}>
+                        ${(inst.buying_power || 0).toLocaleString()}
+                    </span>
+                 </div>
                  <div className="flex flex-col border-l border-slate-800/40 pl-4 text-center"><span className="text-[8px] text-slate-400 uppercase font-black tracking-tighter uppercase font-bold">EXP</span><span className="text-xs font-black text-slate-100 tabular-nums">{(inst.gross_exposure || 0).toFixed(1)}%</span></div>
                  <div className="flex flex-col border-l border-slate-800/40 pl-4 text-center"><span className="text-[8px] text-slate-400 uppercase font-black tracking-tighter uppercase font-bold">ROE</span><span className={`text-xs font-black tabular-nums ${inst.roe >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>{inst.roe >= 0 ? '+' : ''}{(inst.roe || 0).toFixed(2)}%</span></div>
              </div>
@@ -521,7 +592,11 @@ export default function MissionControl() {
       </div>
 
       <div className="flex-1 grid grid-cols-12 gap-2 pb-10">
-        <Panel title="Spectral Alpha Feed" icon={Activity} className="col-span-12 xl:col-span-4 shadow-2xl">
+        <Panel 
+          title={`SPECTRAL :: ${TICKER_NAMES[spectralData?.ticker] || spectralData?.ticker || '---'} [${spectralData?.adf_p_value < 0.05 ? 'LOCKED' : 'DRIFT'}]`} 
+          icon={Activity} 
+          className="col-span-12 xl:col-span-4 shadow-2xl"
+        >
           <div className="flex flex-1 flex-col gap-4 min-h-0">
             {spectralData && spectralData.history ? (
               <>
@@ -551,7 +626,11 @@ export default function MissionControl() {
           </div>
         </Panel>
 
-        <Panel title="RL Metacognition" icon={ShieldAlert} className="col-span-12 xl:col-span-4 shadow-2xl">
+        <Panel 
+          title={`INTELLIGENCE :: ${((meta.policy_conviction || 0) * 100).toFixed(2)}% CONVICTION`} 
+          icon={ShieldAlert} 
+          className="col-span-12 xl:col-span-4 shadow-2xl"
+        >
           {!globalData ? <TelemetryFailsafe /> : (
             <div className="flex flex-1 flex-col gap-6 min-h-0">
                <div className="flex-none border border-slate-800/60 bg-black p-4 relative shadow-inner">
@@ -584,7 +663,11 @@ export default function MissionControl() {
           )}
         </Panel>
 
-        <Panel title="Ranking Ladder" icon={TrendingUp} className="col-span-12 xl:col-span-4 shadow-2xl">
+        <Panel 
+          title={`HIERARCHY :: ${inst.active_positions || 0} ACTIVE POS`} 
+          icon={TrendingUp} 
+          className="col-span-12 xl:col-span-4 shadow-2xl"
+        >
            {!globalData ? <TelemetryFailsafe /> : (
              <>
                <RankingGrid ladder={globalData.rankings?.ladder} onSelectTicker={handleSelectTicker} filterSector={selectedSector} tickerOrder={tickerOrder} sensors={sensors} handleDragEnd={handleDragEnd} />
@@ -617,7 +700,15 @@ export default function MissionControl() {
               <div className="col-span-12 md:col-span-2 flex flex-col justify-center border-b md:border-b-0 md:border-r border-slate-800/60 pb-4 md:pb-0 md:pr-8">
                 <div className="text-[10px] text-slate-400 uppercase font-black mb-1 tracking-widest font-bold">Imp Shortfall</div>
                 <div className="text-3xl font-black text-slate-100 tabular-nums italic drop-shadow-[0_0_10px_rgba(255,255,255,0.1)]">{(exec.implementation_shortfall || 0).toFixed(2)} <span className="text-xs text-slate-500 not-italic uppercase font-bold tracking-tighter font-mono">BPS</span></div>
-                <div className="text-[9px] text-slate-800 font-black tracking-widest mt-1 uppercase italic font-mono opacity-40">muscle_kernel::C++26</div>
+                
+                <div className="mt-4 border-t border-slate-800/40 pt-4">
+                    <div className="text-[10px] text-slate-400 uppercase font-black mb-1 tracking-widest font-bold">Total Fees</div>
+                    <div className="text-xl font-black text-rose-500 tabular-nums italic shadow-sm">
+                        ${(exec.cumulative_fees || 0).toLocaleString(undefined, {maximumFractionDigits: 0})}
+                    </div>
+                </div>
+
+                <div className="text-[9px] text-slate-800 font-black tracking-widest mt-4 uppercase italic font-mono opacity-40">muscle_kernel::C++26</div>
               </div>
               <div className="col-span-12 md:col-span-6 border-b md:border-b-0 md:border-r border-slate-800/60 pb-4 md:pb-0 md:pr-8 flex flex-col gap-2">
                 <div className="text-[10px] text-slate-300 uppercase font-black flex justify-between items-center border-b border-slate-800/60 pb-1 tracking-widest">
