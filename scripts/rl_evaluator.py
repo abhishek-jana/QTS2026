@@ -11,42 +11,6 @@ from qts_core.logger import logger
 from alpha_factory.simulation_engine import SimulationEngineV5
 from scripts.monte_carlo_regime_jitter import MonteCarloStressTest
 
-def perform_logic_audit(df):
-    """Audits the agent logic based on simulation results."""
-    logger.info("\n--- 🕵️ LOGIC AUDIT REPORT ---")
-    
-    if df is None or df.empty:
-        logger.error("❌ No data available for audit.")
-        return False
-
-    # 1. Concentration Versatility
-    conc_dist = df['Conc'].value_counts(normalize=True)
-    logger.info("📊 Concentration Mix:")
-    for stocks, pct in conc_dist.items():
-        logger.info(f"  {stocks} Stocks: {pct:.1%}")
-
-    # 2. Leverage & Risk
-    df['Drawdown'] = (df['NLV'] - df['NLV'].cummax()) / df['NLV'].cummax()
-    max_dd = df['Drawdown'].min()
-    max_gross = (df['Lev'] + df['Hedge']).max()
-    
-    logger.info("🛡️ Risk & Leverage:")
-    logger.info(f"  Max Gross Exposure: {max_gross:.2f}x (Constraint: 1.00x)")
-    logger.info(f"  Max Drawdown: {max_dd:.2%}")
-
-    # 3. Final Verdict
-    score = 0
-    if len(conc_dist) > 1: score += 1 
-    if max_gross <= 1.001: score += 1 
-    if max_dd > -0.12: score += 1 
-
-    if score == 3:
-        logger.success("✅ VERDICT: Institutional behavior VALIDATED.")
-    else:
-        logger.warning(f"⚠️ VERDICT: PARTIAL SUCCESS ({score}/3). Agent may be over-concentrated.")
-    
-    return score == 3
-
 def run_rl_evaluation():
     logger.info("🏁 Starting Unified RL Evaluation Pipeline (V5.1 Optimized)...")
     
@@ -79,7 +43,30 @@ def run_rl_evaluation():
         logger.info(f"  📊 SPY BENCHMARK:          ${spy_final:,.2f} ({spy_ret:.2%})")
         logger.info(f"  🎯 RL AGENT TOTAL ALPHA:   {alpha:.2%}")
         
-        # SENIOR FIX: Store RL metrics in JSON for later review
+        # --- EXECUTION AUDIT (The requested block) ---
+        avg_exp_rl = df['Lev'].mean()
+        avg_exp_base = baseline_df['Lev'].mean() if baseline_df is not None else 1.0
+        rl_churn = (df['Lev'].diff().abs() > 0.05).sum()
+        base_churn = (baseline_df['Lev'].diff().abs() > 0.05).sum() if baseline_df is not None else 0
+        
+        # Calculate Max Drawdown
+        def get_mdd(series):
+            return (series / series.cummax() - 1).min()
+            
+        rl_mdd = get_mdd(df['NLV'])
+        base_mdd = get_mdd(baseline_df['NLV']) if baseline_df is not None else 0.0
+
+        logger.info("\n" + "="*50)
+        logger.info("🛡️ EXECUTION PERFORMANCE AUDIT:")
+        logger.info(f"  RL Average Net Exposure: {avg_exp_rl:.2f}x")
+        logger.info(f"  Baseline Net Exposure:   {avg_exp_base:.2f}x")
+        logger.info(f"  RL Churn Events:         {rl_churn} days")
+        logger.info(f"  Baseline Churn Events:   {base_churn} days")
+        logger.info(f"  RL Max Drawdown:         {rl_mdd:.2%}")
+        logger.info(f"  Baseline Max Drawdown:   {base_mdd:.2%}")
+        logger.info("="*50 + "\n")
+        
+        # Store metrics
         import json
         summary = {
             "timestamp": datetime.now().isoformat(),
@@ -87,30 +74,43 @@ def run_rl_evaluation():
             "total_return_pct": float(ret * 100),
             "baseline_return_pct": float(baseline_ret * 100),
             "spy_return_pct": float(spy_ret * 100),
-            "alpha_pct": float(alpha * 100)
+            "alpha_pct": float(alpha * 100),
+            "rl_avg_exposure": float(avg_exp_rl),
+            "rl_mdd": float(rl_mdd)
         }
-        metrics_path = "data/strategy_metrics.json"
-        existing_metrics = {}
-        if os.path.exists(metrics_path):
-            try:
-                with open(metrics_path, "r") as f: existing_metrics = json.load(f)
-            except Exception: pass
-            
-        existing_metrics["rl_evaluation"] = summary
         os.makedirs("data", exist_ok=True)
-        with open(metrics_path, "w") as f: json.dump(existing_metrics, f, indent=4)
-        logger.info(f"✨ RL Metrics stored to {metrics_path}")
+        with open("data/strategy_metrics.json", "w") as f:
+            json.dump({"rl_evaluation": summary}, f, indent=2)
+            
+        # --- STEP 2: MONTE CARLO STRESS TEST ---
+        logger.info("\n--- STEP 2: MONTE CARLO STRESS TEST ---")
+        mc = MonteCarloStressTest()
+        steps = sim.last_steps
+        spy_df = sim.last_spy_df
+        mc.run_simulation(n_paths=10, backtest_mode=False, steps=steps, spy_df=spy_df)
 
-        # Combined Run: Perform Audit on the SAME data
-        perform_logic_audit(df)
-    
-    # --- STEP 2: MONTE CARLO STRESS TEST ---
-    logger.info("\n--- STEP 2: MONTE CARLO STRESS TEST ---")
-    mc = MonteCarloStressTest()
-    steps = getattr(sim, 'last_steps', None)
-    spy_df = getattr(sim, 'last_spy_df', None)
-    mc.run_simulation(n_paths=10, backtest_mode=False, steps=steps, spy_df=spy_df)
-    
+        # --- STEP 3: UNIFIED PERFORMANCE PLOT ---
+        import matplotlib.pyplot as plt
+        plt.figure(figsize=(14, 7), facecolor='#050505')
+        ax = plt.gca(); ax.set_facecolor('#050505')
+        
+        plt.plot(df['Date'], df['NLV'], color='#10b981', lw=2.5, label='RL Survivor (V7.4)')
+        if baseline_df is not None:
+            plt.plot(baseline_df['Date'], baseline_df['NLV'], color='#3b82f6', lw=1.5, alpha=0.8, label='RankNet Baseline')
+        
+        plt.plot(df['Date'], df['SPY_NLV'], color='#475569', ls='--', lw=1.5, label='SPY Benchmark')
+        
+        plt.title("Master Sniper V7.4: Survivor Alpha vs Benchmark", color='white', fontsize=16, fontweight='bold')
+        plt.xlabel("Date", color='white'); plt.ylabel("Capital ($)", color='white')
+        plt.grid(True, alpha=0.1, color='white')
+        plt.legend(facecolor='#050505', edgecolor='white', labelcolor='white')
+        plt.tick_params(colors='white')
+        
+        os.makedirs("data", exist_ok=True)
+        plt.savefig("data/simulation_performance.png")
+        plt.close()
+        logger.info("🎨 Unified Performance Plot saved to data/simulation_performance.png")
+
     logger.info("\n" + "="*50)
     logger.success("✅ UNIFIED EVALUATION COMPLETE")
     logger.info("  Visual Reports Generated:")

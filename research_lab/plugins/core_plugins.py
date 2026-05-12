@@ -129,6 +129,55 @@ class VolumePlugin(ModalityPlugin):
         windows = [v_norm[t-lookback:t].reshape(-1, 1) for t in range(lookback, len(v_norm) + 1)]
         return torch.tensor(np.array(windows)).float()
 
+@register_modality("x_calendar")
+class CalendarPlugin(ModalityPlugin):
+    """Encodes calendar effects (day of week, month, etc.) as temporal features."""
+    def __init__(self, **kwargs): self._name = "x_calendar"
+    @property
+    def name(self) -> str: return self._name
+    def transform(self, pit_view: pd.DataFrame, lookback: int) -> torch.Tensor:
+        # Extract features from index (DatetimeIndex expected)
+        times = pit_view.index
+        dow = times.weekday.values / 6.0 # Normalize 0-1
+        month = (times.month.values - 1) / 11.0
+        hour = times.hour.values / 23.0
+        minute = times.minute.values / 59.0
+        
+        features = np.stack([dow, month, hour, minute], axis=1)
+        windows = [features[t-lookback:t] for t in range(lookback, len(features) + 1)]
+        return torch.tensor(np.array(windows)).float()
+
+@register_modality("x_static")
+class StaticMetadataPlugin(ModalityPlugin):
+    """Provides static stock metadata (Sector, Market Cap Decile) as covariates."""
+    def __init__(self, **kwargs): 
+        self._name = "x_static"
+        # Dummy mapping for demo; in production, this should be a DB lookup
+        self.sector_map = {
+            'AAPL': 0, 'MSFT': 0, 'NVDA': 0, 'GOOGL': 0, 'AMZN': 0, # Tech/Comm
+            'META': 0, 'TSLA': 1, 'LLY': 2, 'UNH': 2, 'JPM': 3,    # Cons/Health/Fin
+            'V': 3, 'MA': 3, 'AVGO': 0, 'HD': 4, 'PG': 4,          # Fin/Cons
+            'COST': 4, 'JNJ': 2, 'ABBV': 2, 'MRK': 2, 'BAC': 3,
+            'CRM': 0, 'ORCL': 0, 'ADBE': 0, 'AMD': 0, 'PEP': 4,
+            'KO': 4, 'TMO': 2, 'WMT': 4, 'MCD': 4, 'CSCO': 0,
+            'NFLX': 0, 'ABT': 2, 'DHR': 2, 'WFC': 3, 'ACN': 0,
+            'QCOM': 0, 'LIN': 5, 'GE': 5, 'PM': 4, 'TXN': 0,
+            'INTU': 0, 'AMGN': 2, 'VZ': 0, 'AMAT': 0, 'UNP': 5,
+            'LOW': 4, 'BX': 3, 'GS': 3, 'ISRG': 2, 'HON': 5,
+            'MS': 3, 'CVS': 2, 'COP': 6, 'IBM': 0, 'BA': 5,
+            'SPGI': 3, 'CAT': 5, 'LMT': 5, 'RTX': 5, 'SPY': 7
+        }
+    @property
+    def name(self) -> str: return self._name
+    def transform(self, pit_view: pd.DataFrame, lookback: int) -> torch.Tensor:
+        ticker = pit_view['ticker'].iloc[0]
+        sector = self.sector_map.get(ticker, 8) # 8 = Unknown
+        # For now, just a single static categorical feature per ticker
+        # We repeat it across the windows (though TFT only needs it once)
+        val = torch.tensor([float(sector)])
+        n_windows = len(pit_view) - lookback + 1
+        return val.repeat(n_windows, 1)
+
 @register_modality("x_momentum")
 class MomentumPlugin(ModalityPlugin):
     """Provides raw trend visibility (no fractional differencing)."""

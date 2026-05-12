@@ -1,78 +1,62 @@
 import numpy as np
 import pandas as pd
-from sklearn.linear_model import LinearRegression
+from qts_core.logger import logger
 
 class AlphaLabeler:
     """
-    Generates target labels for the LTR model.
-    Focuses on idiosyncratic alpha by residualizing returns against market proxies.
+    Generates target labels for the Sniper strategy.
+    Supports two modes:
+    - 'residual': Focuses on 'Pure Alpha' by subtracting benchmark returns (Market-Neutral).
+    - 'directional': Focuses on raw returns to aggressively ride Beta/Momentum.
     """
-    def __init__(self):
-        self.model = LinearRegression()
+    def __init__(self, mode: str = 'directional'):
+        self.mode = mode
 
-    def residualize(self, asset_returns: np.ndarray, market_returns: np.ndarray) -> np.ndarray:
+    def generate_labels(self, pit_view: pd.DataFrame, horizon_days: int = 3, 
+                        benchmark: str = 'SPY', ticker_col: str = 'ticker', 
+                        timeframe: str = '15Min') -> pd.DataFrame:
         """
-        Calculates the residuals of the asset returns regressed against market returns.
-        Ensures the resulting alpha is uncorrelated with the market.
+        Calculates forward log-returns.
+        Target = ln(P_{t+3days} / P_t)
+        If mode == 'residual', subtracts benchmark return.
         """
-        # Handle cases with NaN or inf (common in shifted returns or data errors)
-        mask = np.isfinite(asset_returns) & np.isfinite(market_returns)
-        if not mask.any():
-            return np.full_like(asset_returns, np.nan)
+        # Ensure unique PIT entries and pivot to wide format
+        df = pit_view.reset_index() if 'event_time' not in pit_view.columns else pit_view
+        df = df.drop_duplicates(subset=['event_time', ticker_col])
+        
+        # Pivot prices: rows=time, cols=tickers
+        wide_price = df.pivot(index='event_time', columns=ticker_col, values='close')
+        
+        # Calculate bar-based shift for the 3-day horizon
+        if timeframe == '15Min':
+            shift_bars = horizon_days * 26
+        elif timeframe == '1Hour':
+            shift_bars = horizon_days * 7
+        else:
+            shift_bars = horizon_days
             
-        X = market_returns[mask].reshape(-1, 1)
-        y = asset_returns[mask]
-        
-        # Fit OLS
-        self.model.fit(X, y)
-        
-        # Calculate residuals: y - y_pred
-        prediction = self.model.predict(X)
-        residuals = np.full_like(asset_returns, np.nan)
-        residuals[mask] = y - prediction
-        
-        return residuals
+        logger.debug(f"Labeling Engine: Using {horizon_days}-day horizon ({shift_bars} bars for {timeframe}). Mode: {self.mode}")
 
-    def residualize_universe(self, asset_returns: pd.DataFrame, market_returns: pd.Series) -> pd.DataFrame:
-        """
-        Batch residualization: residualizes each column in asset_returns against market_returns.
-        """
-        residuals_dict = {}
-        for ticker in asset_returns.columns:
-            residuals_dict[ticker] = self.residualize(asset_returns[ticker].values, market_returns.values)
+        # Calculate forward log-returns: ln(P_{t+N} / P_t)
+        f_returns = np.log(wide_price.shift(-shift_bars) / wide_price)
+        
+        if self.mode == 'directional':
+            return f_returns
             
-        return pd.DataFrame(residuals_dict, index=asset_returns.index)
+        # Residual Mode Logic
+        if benchmark in f_returns.columns:
+            logger.debug(f"Residualizing against {benchmark}...")
+            bench_ret = f_returns[benchmark]
+            residual_returns = f_returns.sub(bench_ret, axis=0)
+        else:
+            logger.warning(f"Benchmark {benchmark} not found. Falling back to cross-sectional mean.")
+            residual_returns = f_returns.sub(f_returns.mean(axis=1), axis=0)
+            
+        return residual_returns
 
     def apply_z_score(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Applies cross-sectional Z-scoring to a DataFrame of residuals.
-        Calculation: (x - mean) / std across columns (tickers) for each row (time).
+        Applies cross-sectional Z-scoring to force the model to rank 
+        outperformance relative to the 60-stock universe.
         """
-        return df.apply(lambda row: (row - row.mean()) / row.std() if row.std() > 0 else row - row.mean(), axis=1)
-
-    def generate_labels(self, pit_view: pd.DataFrame, horizon: int = 21, ticker_col: str = 'ticker', timeframe: str = '1Day') -> pd.DataFrame:
-        """
-        Generates forward log-returns for multiple tickers.
-        Correctly handles horizon scaling for intraday timeframes.
-        """
-        # Ensure event_time is a column for pivoting if it's currently the index
-        df = pit_view.reset_index() if 'event_time' not in pit_view.columns else pit_view
-        
-        # Ensure unique PIT entries
-        df = df.drop_duplicates(subset=['event_time', ticker_col])
-        
-        # Pivot to get a wide format: rows=event_time, cols=tickers
-        wide_price = df.pivot(index='event_time', columns=ticker_col, values='close')
-        
-        # SENIOR FIX: Convert day-based horizon to bar-based shift
-        # For 15Min, there are ~26 bars in a 6.5h trading day (9:30-16:00)
-        # For 1Hour, there are ~7 bars.
-        shift_bars = horizon
-        if timeframe == '15Min': shift_bars = horizon * 26
-        elif timeframe == '1Hour': shift_bars = horizon * 7
-        
-        # Calculate forward log-returns: ln(P_{t+N} / P_t)
-        # We shift negatively to look into the "future"
-        forward_returns = np.log(wide_price.shift(-shift_bars) / wide_price)
-        
-        return forward_returns
+        return df.apply(lambda row: (row - row.mean()) / (row.std() + 1e-9), axis=1)

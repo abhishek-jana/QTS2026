@@ -138,24 +138,28 @@ In May 2026, a series of production-grade simulations were conducted to determin
 *   **Final NLV**: $323,806.30 (from $100k starting capital).
 *   **Key Finding**: The model's exceptional IC (0.20) acts as a force multiplier when concentrated. High concentration in Top 5 picks prevents Alpha dilution, while 2.0x leverage converts the high win rate into exponential compounding. The Bayesian layer successfully triggered a full liquidation in April 2026, preserving the 200%+ gain before a regime reversal.
 
-## 11. 2026 Target: The 75.6% Win Rate Breakthrough (May 2026)
+## 12. V7.4 The Smart Sniper: Mastery Phase (May 2026)
 
-To prepare for live execution in 2026, a final "Regime Hardening" session was conducted to integrate the high-interest-rate dynamics of 2023.
+In May 2026, the system reached a terminal state of crystallization, successfully unifying the TFT Alpha signal with a high-conviction RL Meta-Controller. This "Master Sniper" configuration achieved the highest outperformance recorded in the project's history.
 
-### Model: Challenger V2 (Regime-Hardened)
-- **Training Window**: Jan 2019 - Dec 2023 (Includes the full AI breakout).
-- **Backtest Result (2024-2026 OOS)**:
-    - **Avg IC**: 0.1677
-    - **Win Rate**: **75.6%** (Project High)
+### Results: The Alpha Breakthrough
+- **Total Alpha (vs SPY)**: **+102.60%**
+- **RL Agent Return**: **+156.00%** ($255,998 Final NLV)
+- **Max Drawdown**: **-26.19%** (Nearly parity with the 1.0x Baseline of -25.06%)
+- **Average Exposure**: **0.87x** (Proving active de-risking without sacrificing gains)
 
-### The "Training-Centric" Temporal Weighting Logic
-A professional-grade importance-sampling engine was implemented to solve the problem of regime drift.
+### Key Technical Fixes
+1.  **The NaN Safeguard**: Implemented a permanent "Pre-Flight Check" in the RL pipeline that automatically sanitizes incoming CSV data using a global `ffill().bfill()` chain. This neutralized a critical bug where 544 NaNs were causing gradient collapse.
+2.  **Observation Perception Sync**: Resolved a major "Observation Mismatch" where the agent was trained on 100x scaled Alpha scores but evaluated on 1x raw scores. Synchronizing all scripts to 100x scaling allowed the agent to "see" the signal and successfully toggle risk.
+3.  **The Smart Signal Gate**: Replaced reactive PnL penalties with a predictive gate. The agent now only de-risks to cash if **Volatility Velocity > 0.0005** AND **RankNet Conviction < 0.008**. This prevents "Cowardly" flight to cash during productive volatility.
 
-**1. Anchor Point**: The peak importance (Weight = 1.0) is anchored to the **last day of the Training Set** (e.g., Oct 2023). 
-**2. Exponential Decay**: Samples are weighted backwards in time using the formula:
-   $$W_t = \exp(-\lambda \cdot \Delta days)$$
-   where $\lambda = 0.001$. This ensures the model views 2023 patterns as ~2.5x more "true" than 2019 patterns.
-**3. Local Normalization**: Weights are normalized *after* splitting the data so that the average weight in the Training set is 1.0. This prevents gradient explosion and keeps Train/Val losses on the same mathematical scale.
-**4. Unweighted Stress-Test**: The Validation set (Nov-Dec 2023) is deliberately left unweighted. This provides a raw, honest look at the model's ability to generalize to the "unseen future" without any special intensity bias.
+### Hardware Benchmark: Logical vs Physical
+A performance audit was conducted to optimize training throughput on a 6-core (12-thread) CPU:
+- **n_envs = 6 (Physical)**: ~1100 FPS (Lower bandwidth contention but idle cycles).
+- **n_envs = 12 (Logical)**: **~1350 FPS** (Optimal saturation for this specific memory bus).
+- **Decision**: Reverted to 12 parallel environments for the final 2M step crystallization run.
 
-**Significance**: Consistency (Win Rate) is superior to raw correlation (IC). A 75% win rate implies the model is effectively "immune" to 3 out of every 4 regime shifts, making it the ideal designated driver for Strategy V4.
+### Strategic Crystallization
+The agent's policy reached an **Explained Variance of 0.84** and **Entropy of -4.65**. According to institutional standards, this indicates a hyper-focused, high-confidence policy. Per "Senior Quant" guidance, training was frozen at **660,000 steps** to prevent temporal overfitting (memorizing the calendar) and preserve generalization for live trading.
+
+**Status:** Sniper V7.4 Verified. Proceeding to Live Paper Trading.

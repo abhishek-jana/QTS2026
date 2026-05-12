@@ -42,19 +42,22 @@ This is a single-context repository. See `docs/agents/domain.md`.
 - **Goal:** Institutional Grade Sharpe.
 - **Parameters:** Top 12 stocks, Dynamic Beta Hedging, Hard Trailing Stop-Loss.
 
-### Logic V5: Master Chief (ACTIVE)
-- **Goal:** Multi-Regime Dominance via HRL-MoE and Multi-Modal Alpha.
-- **Architecture:** 32-Sensor RL Agent (The General) + Multi-Modal RankNet with 0.21+ IC (The Scout).
-- **Positioning:** Level 3 Risk Parity (Conviction Softmax / Rolling Volatility).
-- **Spec:** See `docs/STRATEGY_V5_MASTER_CHIEF.md`.
+### Logic V6: Ghost Protocol (DEPRECATED)
+- **Goal:** Transform-RL Unified Intelligence.
+- **Architecture:** Transformer-based alpha ranking + RL Meta-Controller.
+- **Status:** Pushed to `v6.0-ghost-protocol` branch.
+
+### Logic V7: Sniper-Residual (ACTIVE)
+- **Goal:** Daily Residual Alpha Outperformance.
+- **Architecture:** Temporal Fusion Transformer (TFT) + Bayesian Drift Tracker + Risk Parity Sizing.
+- **Spec:** See `docs/STRATEGY_V7_SNIPER_RESIDUAL.md`.
 
 ## CLI Usage
 
-### 1. Signal Pipeline (The Stock Picker)
-- `python run.py signal ingest`: Ingest historical data for the full universe.
-- `python run.py signal train`: Train the Supervised Ghost Protocol Transformer on 5-year historical data.
-- `python run.py signal eval`: Compare Signal performance against baselines.
-- `python run.py signal test-subset`: Run rapid verification on SPY, NVDA, and TSM.
+### 1. The Sniper Pipeline (Alpha & Allocation)
+- `python run.py signal ingest`: Ingest historical data for the 60-stock universe.
+- `python run.py signal train`: Train the TFT Residual Alpha model.
+- `python run.py signal eval`: Evaluate Residual IC against SPY.
 
 ### 2. RL Pipeline (The Macro Allocator)
 - `python run.py rl data`: Pre-compute 32-sensor training data for RL.

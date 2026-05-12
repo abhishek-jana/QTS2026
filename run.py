@@ -81,6 +81,7 @@ def main():
     signal_sub.add_parser("ingest", help="Ingest historical market data")
     signal_sub.add_parser("train", help="Train the signal extraction model")
     signal_sub.add_parser("eval", help="Evaluate signal accuracy (IC/WinRate)")
+    signal_sub.add_parser("test-subset", help="Run rapid verification on a subset of tickers")
 
     # --- 2. RL Pipeline (The General / Allocation Engine) ---
     rl_parser = subparsers.add_parser("rl", help="Reinforcement Learning Allocation")
