@@ -190,3 +190,18 @@ In this phase, the project successfully synchronized the high-speed backend simu
 - **Gain**: **+134.09%**
 - **Regime Range**: 2024-01-01 -> 2026-05-05
 - **Execution**: RL-Managed Concentrated Sniper (Top 5)
+
+## 14. Real-World Latency Stress Test & Strategy Peek (May 12, 2026)
+
+To ensure the strategy's robustness against real-world execution delays, a high-fidelity **Latency Stress Test** framework was implemented.
+
+### The "Overnight Thinking" Model
+In institutional trading, data is often ingested at market close (Day T), and complex AI inference (Physics/TFT) is performed overnight. Execution then occurs at the next market open (Day T+1).
+- **Toggle**: `latency_stress_test: true` in `config.yaml`.
+- **Mechanism**: Implemented a **Signal Buffer** in the simulation OMS. Decisions generated on Day T are stored and only executed on Day T+1 using that day's specific prices.
+- **Validation**: This confirms that the 3-day Sniper Alpha is structural and not dependent on "flash-in-the-pan" momentum that evaporates within hours.
+
+### Strategy Peek (`[PLANNING]` Telemetry)
+To provide transparency into the Agent's intent before capital is committed, a predictive logging layer was added:
+- **Planning Log**: The terminal now announces rebalance decisions in advance: `🔮 [PLANNING] AI picks for Next Day: ['NVDA', ...]`.
+- **Audit Value**: This allows the user to know exactly what is in the "Next Day Order Queue" before the trades hit the dashboard, mirroring the real-world operational workflow of reviewing AI orders before the 9:30 AM open.

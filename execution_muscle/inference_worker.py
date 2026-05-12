@@ -41,8 +41,11 @@ class InferenceWorker:
         self.tickers = self.config['universe']['tickers']
         self.update_interval = self.config.get('ui_cockpit', {}).get('update_interval_ms', 1000) / 1000.0
         self.trading_mode = self.config.get('execution_muscle', {}).get('trading_mode', 'sim')
+        self.latency_stress_test = self.config.get('execution_muscle', {}).get('latency_stress_test', False)
         
         logger.info(f"INFERENCE WORKER: Initializing Master Sniper V7.4.3 (Full Telemetry).")
+        if self.latency_stress_test:
+            logger.warning("⚠️ LATENCY STRESS TEST ACTIVE: Signals will be delayed by 1 day.")
         
         self.rl_pilot = None
         rl_path = "models/rl_pilot_final.zip"
@@ -104,7 +107,7 @@ class InferenceWorker:
         self.performance_history = []; self.oms_queue = {"filled": 0, "working": 0, "rejected": 0}
         self.order_log = []; self.total_notional_traded = 0.0; self.cumulative_fees = 0.0
         self.sim_price_memory = {}; self.last_target_lev = None; self.last_concentration = None
-        self.is_initialized = False; self.spy_start_p = None
+        self.is_initialized = False; self.spy_start_p = None; self.sim_signal_queue = None
         
         self.live_bot = None
         if self.trading_mode in ['paper', 'live']:
@@ -211,21 +214,55 @@ class InferenceWorker:
 
         obs, conviction_belief = self._get_rl_observation(house_view['ladder'], nlv, self.sim_cash, self.current_knowledge_time, 100000.0, self.peak_value, [], 0.0, 0.0, [])
         
+        # 1. AI Decision for TODAY
         is_first_step = self.last_target_lev is None
         if self.rl_pilot:
             act, _ = self.rl_pilot.predict(obs, deterministic=True)
-            should_reb = (act[2] > 0.7) or (self.current_knowledge_time.weekday() == 0) or is_first_step
-            if should_reb:
-                self.last_target_lev = 1.0 if act[0] > 0.5 else 0.0
-                self.last_concentration = [5, 8, 12, 15][int(np.clip(act[1], 0, 3.99))]
+            should_reb_signal = (act[2] > 0.7) or (self.current_knowledge_time.weekday() == 0) or is_first_step
+            target_lev_signal = 1.0 if act[0] > 0.5 else 0.0
+            concentration_signal = [5, 8, 12, 15][int(np.clip(act[1], 0, 3.99))]
         else:
-            should_reb = (self.current_knowledge_time.weekday() == 0) or is_first_step
-            self.last_target_lev = 1.0; self.last_concentration = 12
+            should_reb_signal = (self.current_knowledge_time.weekday() == 0) or is_first_step
+            target_lev_signal = 1.0; concentration_signal = 12
+
+        current_decision = {
+            "should_reb": should_reb_signal,
+            "target_lev": target_lev_signal,
+            "concentration": concentration_signal,
+            "ladder": house_view['ladder']
+        }
+
+        # Peek into next day if rebalancing
+        if should_reb_signal:
+            top_picks_peek = [e['ticker'] for e in house_view['ladder'][:concentration_signal]]
+            logger.debug(f"🔮 [PLANNING] AI picks for Next Day: {top_picks_peek} (Lev: {target_lev_signal}x, Conc: {concentration_signal})")
+
+        # 2. Handle Latency Toggle
+        if self.latency_stress_test:
+            # Execute YESTERDAY'S decision on TODAY'S prices
+            decision_to_execute = self.sim_signal_queue
+            self.sim_signal_queue = current_decision
+            
+            if decision_to_execute is None:
+                self.last_target_lev = 0.0; self.last_concentration = 5
+                return self._build_stats_bundle(nlv, conviction_belief, pos_mv, 0.0)
+        else:
+            # Perfect Execution: Execute TODAY'S decision on TODAY'S prices
+            decision_to_execute = current_decision
+
+        # 3. Execute the decision
+        should_reb = decision_to_execute['should_reb']
+        target_lev = decision_to_execute['target_lev']
+        concentration = decision_to_execute['concentration']
+        ladder_to_use = decision_to_execute['ladder']
 
         total_shortfall = getattr(self, 'last_shortfall', 0.0)
         if should_reb:
-            target_notional = nlv * self.last_target_lev
-            target_weights = self._calculate_target_weights(house_view['ladder'], self.last_concentration)
+            self.last_target_lev = target_lev
+            self.last_concentration = concentration
+            
+            target_notional = nlv * target_lev
+            target_weights = self._calculate_target_weights(ladder_to_use, concentration)
             top_picks = list(target_weights.keys())
             
             turnover_notional = 0.0
@@ -259,12 +296,14 @@ class InferenceWorker:
             total_shortfall = (shortfall_val / (nlv + 1e-6)) * 10000.0 # BPS
             self.last_shortfall = total_shortfall
 
-        final_long_mv = sum(q * self.sim_price_memory.get(t, 0) for t, q in self.sim_positions.items())
+        return self._build_stats_bundle(nlv, conviction_belief, pos_mv, total_shortfall)
+
+    def _build_stats_bundle(self, nlv, conviction_belief, pos_mv, total_shortfall):
         sector_stats, _ = self._get_sector_exposure(self.sim_positions, self.sim_price_memory, nlv)
         active_pos_count = len([q for q in self.sim_positions.values() if q != 0])
         return {
-            "nlv": nlv, "conviction": conviction_belief, "leverage": self.last_target_lev, "hedge": 0.0, "concentration": self.last_concentration,
-            "active_pos": active_pos_count, "sector_exposure": sector_stats, "gross_exposure": (final_long_mv/nlv*100) if nlv > 0 else 0,
+            "nlv": nlv, "conviction": conviction_belief, "leverage": getattr(self, 'last_target_lev', 0.0), "hedge": 0.0, "concentration": getattr(self, 'last_concentration', 5),
+            "active_pos": active_pos_count, "sector_exposure": sector_stats, "gross_exposure": (pos_mv/nlv*100) if nlv > 0 else 0,
             "buying_power": self.sim_cash, "roe": 0.0, "shortfall": total_shortfall,
             "sensors": {"win_rate": 0, "max_dd": (nlv-self.peak_value)/(self.peak_value+1e-6)*100, "ic": 0.1914, "sharpe": 2.45}
         }
