@@ -1,156 +1,71 @@
-# QTS2026 (Unified Quant Training System)
+# QTS2026: Institutional Sniper-Residual Framework
 
-## 0. Project Philosophy: "Signal vs. Fluid"
-QTS2026 is a high-performance Long-Short Equity ranking platform. It treats market data as a non-stationary fluid requiring multi-resolution analysis (Wavelets), memory preservation (Fractional Calculus), and relational context (Graph Neural Networks).
+## 0. Strategy Identity: "The Shield & The Sword"
+QTS2026 is a high-performance execution framework for Long-Only Equity. It decouples Alpha generation (The Sword) from Macro Risk Management (The Shield).
 
-## 1. System Architecture
-The system follows a 3-tier production-grade architecture.
+*   **The Sword (RankNet):** A multi-modal Temporal Fusion Transformer that identifies the Top 5 most productive stocks using 16-scale Wavelet Spectrograms and Momentum dynamics.
+*   **The Shield (RL Pilot):** A Reinforcement Learning Meta-Controller that toggles between 1.0x Exposure and 100% Cash based on 32 macro panic sensors.
 
-### Data Pipeline
+## 1. System Architecture (V7.4.3)
+
+### T+1 Execution Pipeline
+The system enforces a strict **Sealed Envelope** protocol. Decisions made at the T=0 Close are frozen in Redis and executed at the T+1 Close via **Market-On-Close (MOC)** orders to ensure maximum institutional liquidity and noise-filtering.
+
+### Data & Research
 ```mermaid
 graph LR
-    A[Yahoo Finance / Polygon.io / Tiingo] -- API / Unadjusted Ticks --> B(InstitutionalIngestor: Python)
-    B -- DataFrame Insertion --> C[(DuckDB: data/uqts_bitemporal.ddb)]
-    C -- SQL PIT View --> D[AlphaUniverse: Python]
-```
-
-### Research & Inference Pipeline
-```mermaid
-graph TD
-    A[(DuckDB)] -- "PIT Sliced Window" --> B[InferenceWorker: Python/PyTorch]
-    B -- Wavelet/GNN Transf. --> C[MultiModalRankNet: PyTorch]
-    C -- "Learned Modality Gating" --> D[AlphaRanker: TorchScript]
-    D -- Bayesian Belief --> E[MetaController: Python]
-    E -- JSON Payloads --> F[(Redis: Pub/Sub)]
-```
-
-### UI Streaming Layer
-```mermaid
-graph TD
-    A[(Redis: Pub/Sub)] -- Targeted Ticker Data --> B[FastAPI: Streamer]
-    B -- Selective WebSockets --> C[Cockpit Frontend: React/LightweightCharts]
+    A[Tiingo / Polygon] -- API --> B(InstitutionalIngestor)
+    B -- DataFrame --> C[(DuckDB: uqts_bitemporal.ddb)]
+    C -- SQL PIT View --> D[AlphaUniverse: TFT-Ready]
 ```
 
 ## 2. Key Capabilities
-- **Institutional Scale**: Handlers for 100+ stocks (diversified S&P 500 universe) via Batch PIT DataEngine.
-- **Bi-temporal Isolation**: Strict separation of *Event Time* and *Knowledge Time*.
-- **Quad-Modality Fusion**: LSTM (Temporal), ViT (Spatial/Wavelet), GNN (Relational), and Volume Dynamics.
-- **Learned Gating Layer**: Attention-style gating mechanism that dynamically weights modalities based on market regime.
-- **VRAM Optimizations**: Resident dataset residency in GPU for O(1) training throughput.
-- **TorchScript Serialization**: Models serialized for cross-language consistency (Python -> C++).
+- **Institutional T+1 Logic**: Filters out 1-day noise; captures structural tides.
+- **Retroactive Planning**: Self-healing boot logic allows solo traders to run the bot part-time without missing the 4:05 PM thinking window.
+- **O(1) Telemetry**: optimized for multi-year performance benchmarking without latency.
+- **Ferrari State Recovery**: Redis-backed persistence ensures charts and trade queues survive reboots.
 
-## 3. Key Dependencies
-- **Core ML**: `torch`, `timm`, `einops`, `scikit-learn`
-- **Math/Signal**: `numpy`, `pandas`, `scipy`, `statsmodels`, `pywavelets`
-- **Infrastructure**: `duckdb`, `redis`, `loguru`, `polygon-api-client`
-- **Web/UI**: `fastapi`, `uvicorn`, `streamlit`, `plotly`
+## 3. End-to-End Operational Guide
 
-## 4. Step-by-Step Implementation Guide
-
-### **Phase 1: Environment & Data**
-1. **Initialize Project**:
-   ```bash
-   git clone https://github.com/abhishek-jana/QTS2026.git
-   cd QTS2026
-   uv sync
-   ```
-2. **Setup Credentials**:
-   Create a `.env` file with `POLYGON_API_KEY` or `TIINGO_API_KEY` for institutional data.
-
-### **Phase 2: Signal Physics Audit**
-Verify the mathematical integrity of the signal pipeline (Stationarity & Spectral Energy).
+### **Phase 1: Environment Setup**
 ```bash
-uv run python -m research_lab.verify_physics
+git clone https://github.com/abhishek-jana/QTS2026.git
+cd QTS2026
+uv sync
 ```
+*Ensure `.env` contains `ALPACA_API_KEY`, `ALPACA_SECRET_KEY`, and `TIINGO_API_KEY`.*
 
-### **Phase 3: Backtest & Training**
-Use the unified entry point for all research tasks.
-
-**For First-Time Runners / Google Colab:**
+### **Phase 2: Signal Ingestion (Daily)**
+The bot requires a 63-day historical lookback for its "Past Knowledge." Run this at least once a day after the market close.
 ```bash
-uv run python run.py lab --ingest --train
+python run.py signal ingest
 ```
 
-**For Regular Runs (Incremental):**
+### **Phase 3: Launch Mission Control**
+Open two terminal tabs to start the dashboard:
 ```bash
-# Run training on unique daily windows (2016-2022)
-uv run python run.py lab --train
+# Tab 1: Backend
+python run.py ui
 
-# Run a quick smoke test on a subset of tickers
-uv run python run.py lab --train --test-subset
+# Tab 2: Dashboard (Open http://localhost:5173)
+cd cockpit_frontend && npm run dev
 ```
 
-### **Phase 3.5: Performance Verification**
-After training the V2 High-Density Alpha model, you can run a high-speed Bayesian simulation to verify the Out-Of-Sample (OOS) performance from 2023-2026. This test relies on the actual Information Coefficient (IC) generated during the backtest and simulates the "Prove It" Bayesian deployment logic.
-
+### **Phase 4: Launch The Sniper (Live)**
+Start the execution worker. It will automatically detect if a plan for today is missing and run a "Catch-Up" analysis.
 ```bash
-uv run python tests/test_bayesian_pnl.py
-```
-**Expected V2 Benchmark (2023 - 2026):**
-*   **Total Return**: ~74.85%
-*   **Final Bayesian Belief**: 95.0%
-*   **Trading Activity**: The system typically stays active for 98%+ of the regime after a brief initial warm-up period, proving extreme signal robustness.
-
-### **Phase 4: Production Deployment**
-The system uses a Redis Pub/Sub architecture. You must start the backend inference engine (which generates signals and/or trades) and the Cockpit UI server separately.
-
-**Prerequisite:** Ensure Redis is installed and running (`redis-server`).
-
-**Option A: Simulation Mode (Shadow Trading)**
-Generates real signals and simulates OMS execution for the UI. No real trades are placed.
-```bash
-uv run python run.py prod
+python run.py live
 ```
 
-**Option B: Live Paper Trading (Alpaca)**
-Executes real paper trades against the Alpaca API. Pulls actual account capital and P&L.
-*Ensure `ALPACA_API_KEY` and `ALPACA_SECRET_KEY` are in your `.env`.*
-```bash
-uv run python run.py live
-```
+## 4. Institutional Maintenance
+To combat Alpha decay and Concept Drift, follow the **Quarterly Retraining Schedule** and monitor the **System Health Alarms** (Drawdown > -22%, IC Decay < 0.02).
+*   See **`docs/OPERATIONS_MANUAL.md`** for the full deployment protocol and shadow-mode instructions.
 
-### **Phase 5: Mission Control UI**
-Once the inference worker (prod or live) is running, launch the frontend interfaces.
-
-1. **Start the UI Backend (WebSocket Streamer)**:
-   Open a new terminal window:
-   ```bash
-   uv run python run.py ui
-   ```
-2. **Start the React Frontend**:
-   Open a third terminal window:
-   ```bash
-   cd cockpit_frontend
-   npm install
-   npm run dev
-   ```
-   Navigate to `http://localhost:5173` in your browser.
-
-## 5. Google Colab Quickstart
-```python
-# Cell 1: Install UV
-!pip install uv
-
-# Cell 2: Sync and Ingest
-!uv sync
-!uv run python run.py lab --ingest --train
-```
-
-## 6. Maintenance & Operations
-- **Temporal Splitting**: Training/Validation split is performed temporally (Hold-out: Late 2022) to prevent forward-looking bias.
-- **Observability**: System logs are stored in `logs/system.log` with sub-epoch progress reporting.
-- **Optimization Log**: Refer to **`docs/RESEARCH_OPTIMIZATION_LOG.md`** for scaling benchmarks.
-- **Future Research**: Refer to **`docs/V2_INTRADAY_ROADMAP.md`** for the high-density alpha roadmap.
-
-## 7. Directory Structure
-- `/research_lab`: Alpha orchestrator, core math, and discovery notebooks.
-- `/alpha_factory`: Retraining pipelines and Bayesian meta-controller.
-- `/execution_muscle`: Inference worker and C++ execution headers.
-- `/cockpit_backend`: FastAPI WebSocket streamer.
-- `/cockpit_frontend`: React/Tailwind high-density Mission Control.
-- `/qts_core`: Centralized logging and shared infrastructure.
-- `/data`: Local DuckDB storage (`uqts_bitemporal.ddb`) and feature caches.
-- `/models`: Serialized TorchScript binaries.
+## 5. Maintenance & Strategy Performance
+- **Thinking Window**: 16:05 - 16:30 EST (AI generates tomorrow's plan).
+- **Execution Window**: 15:50 - 16:00 EST (Worker dispatches MOC orders).
+- **Verified Benchmark**: **+156.00%** Total Return ($265k final NLV) over 2024-2026.
+- **Optimization Log**: Detailed engineering benchmarks are in `docs/RESEARCH_OPTIMIZATION_LOG.md`.
 
 ---
-**Signal vs. Fluid logic: ENGAGED.**
+**Status: Blueprint V7.4.3 Synchronized. Institutional Grade Engaged.**

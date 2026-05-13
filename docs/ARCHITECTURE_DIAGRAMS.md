@@ -28,35 +28,37 @@ graph TD
     G -- JSON Payloads --> H[(Redis: Pub/Sub)]
 ```
 
-## 3. Hierarchical Portfolio Optimization (The "Chef")
+## 3. The "Shield & Sword" Architecture (V7.4.3)
 ```mermaid
 graph TD
-    subgraph L1: Signal Oracle
-        A[RankNet Ensemble] -- "24 Sensors (Alpha Spread, DD, Vol)" --> B[Sensor Vector]
+    subgraph Sword: Alpha Engine (RankNet)
+        A[60-Ticker Universe] -- "63-Day PIT Window" --> B[Temporal Fusion Transformer]
+        B -- "Cross-Sectional Ranking" --> C[Top 5 Picks]
     end
     
-    subgraph L2: RL Pilot
-        B -- Observation --> C[PPO Agent: MLP Policy]
-        C -- Action --> D[Policy: Leverage, Concentration, Hedging]
+    subgraph Shield: Macro Risk (RL Pilot)
+        D[32-Sensor Observation] -- "VIX, Vol_Vel, RSI, Drawdown" --> E[PPO Policy Pilot]
+        E -- "Exposure Decision" --> F[0.0x or 1.0x Leverage]
     end
     
-    subgraph Execution
-        D -- Instruction --> E[OMS: Order Management System]
-        E -- FIX/REST --> F[Broker: Alpaca/IBKR]
-        F -- PnL Feedback --> G[Reward Signal: Sortino Ratio]
-        G -- Backprop --> C
-    end
+    C & F -- "Fused Intelligence" --> G[Strategy Queue: T+1 Plan]
+    G -- "JSON Serialize" --> H[(Redis: pending_decision)]
 ```
 
-## 4. Execution Muscle Pipeline
+## 4. T+1 Execution Muscle Pipeline
 ```mermaid
 graph TD
-    A[(Redis: Pub/Sub)] -- Signal Update --> B[PaperBot: Python/Asyncio]
-    B -- Covariance Matrix --> C[KellySizer: C++]
-    B -- Alpha Decay vs Market Impact --> D[MPC Solver: C++/OSQP]
-    D & C -- Optimal Weighting --> E[ExecutionEngine: C++]
-    E -- Order Instructions --> F[Alpaca API: WebSockets]
-    F -- Fill Updates --> G[Portfolio Reconciler: Asyncio]
+    A[4:15 PM EST: T=0 Close] --> B[Generate Strategy Queue]
+    B -- "Freeze & Persist" --> C[(Redis: Sealed Envelope)]
+    
+    C -- "Boot-up Recover" --> D[InferenceWorker: Python/Asyncio]
+    
+    D -- "Wait for MOC Window" --> E{3:50 PM EST: T+1?}
+    E -- YES --> F[OMS: Order Management System]
+    F -- "MOC Orders" --> G[Broker: Alpaca/IBKR]
+    
+    G -- "Fill @ 4:00 PM Close" --> H[Portfolio Reconciler]
+    H -- "Update History" --> I[(Redis: State Recovery)]
 ```
 
 ## 5. UI Streaming Layer

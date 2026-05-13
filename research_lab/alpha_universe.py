@@ -94,7 +94,7 @@ class AlphaUniverse:
         if pit_view.empty: return pit_view
         return pit_view.set_index('event_time')
 
-    def snapshot(self, as_of: datetime, tickers: List[str], lookback: int = None, labels_override: pd.DataFrame = None, shard_override: Dict[str, pd.DataFrame] = None) -> Optional[MultiModalBatch]:
+    def snapshot(self, as_of: datetime, tickers: List[str], lookback: int = None, labels_override: pd.DataFrame = None, shard_override: Dict[str, pd.DataFrame] = None, require_labels: bool = True) -> Optional[MultiModalBatch]:
         """
         Sniper V7.0: TFT-Ready Sequence Snapshot.
         Distinguishes between static and past (temporal) inputs.
@@ -125,21 +125,23 @@ class AlphaUniverse:
             
             ticker_features = {p.name: p.transform(ticker_slice, lookback) for p in self.plugins}
             
-            if final_labels_df is None:
-                # Local computation if no override provided (for testing)
-                from research_lab.alpha_labeler import AlphaLabeler
-                if not self.labeler: self.labeler = AlphaLabeler()
-                # Increase label_limit to handle weekends/holidays (Sniper V7.4.3 Fix)
-                label_limit = as_of + timedelta(days=self.horizon + 12)
-                local_data = self.get_batch_pit_view([ticker, 'SPY'], label_limit, start_time=as_of - timedelta(days=1))
-                if local_data.empty: continue
-                local_returns = self.labeler.generate_labels(local_data, horizon_days=self.horizon, timeframe=self.timeframe)
-                label_val = float(local_returns[ticker].get(actual_as_of, np.nan))
-            else:
-                ticker_labels = final_labels_df[ticker] if ticker in final_labels_df.columns else pd.Series(dtype=float)
-                label_val = ticker_labels.get(actual_as_of, np.nan)
-            
-            if np.isnan(label_val): continue
+            label_val = 0.0
+            if require_labels:
+                if final_labels_df is None:
+                    # Local computation if no override provided (for testing)
+                    from research_lab.alpha_labeler import AlphaLabeler
+                    if not self.labeler: self.labeler = AlphaLabeler()
+                    # Increase label_limit to handle weekends/holidays (Sniper V7.4.3 Fix)
+                    label_limit = as_of + timedelta(days=self.horizon + 12)
+                    local_data = self.get_batch_pit_view([ticker, 'SPY'], label_limit, start_time=as_of - timedelta(days=1))
+                    if local_data.empty: continue
+                    local_returns = self.labeler.generate_labels(local_data, horizon_days=self.horizon, timeframe=self.timeframe)
+                    label_val = float(local_returns[ticker].get(actual_as_of, np.nan))
+                else:
+                    ticker_labels = final_labels_df[ticker] if ticker in final_labels_df.columns else pd.Series(dtype=float)
+                    label_val = ticker_labels.get(actual_as_of, np.nan)
+                
+                if np.isnan(label_val): continue
             
             for p_name, tensor in ticker_features.items(): 
                 # TFT Distinction: 'x_static' is [dim], 'x_past' is [seq, dim]

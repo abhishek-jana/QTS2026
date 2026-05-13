@@ -611,7 +611,18 @@ export default function MissionControl() {
                     </span>
                   </div>
              </div>
-             <div className="flex flex-col"><span className="text-[8px] text-slate-400 uppercase font-black tracking-tighter tabular-nums font-bold">Event Horizon</span><span className="text-xs font-bold text-slate-100 tabular-nums">{globalData?.timestamp || 'OFFLINE'}</span></div>
+             <div className="flex flex-col border-r border-slate-800/60 pr-6 mr-6">
+                <span className="text-[8px] text-slate-400 uppercase font-black tracking-tighter tabular-nums font-bold">Event Horizon</span>
+                <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold text-slate-100 tabular-nums">{globalData?.timestamp || 'OFFLINE'}</span>
+                    {globalData?.market_status && (
+                        <div className={`flex items-center gap-1 px-1.5 py-0.5 rounded-[2px] border ${globalData.market_status === 'OPEN' ? 'border-emerald-500/30 bg-emerald-500/5 text-emerald-400 shadow-[0_0_10px_rgba(16,185,129,0.1)]' : 'border-rose-900/30 bg-rose-950/10 text-rose-500'}`}>
+                            <div className={`w-1 h-1 rounded-full ${globalData.market_status === 'OPEN' ? 'bg-emerald-500 animate-pulse' : 'bg-rose-900'}`} />
+                            <span className="text-[8px] font-black tracking-widest">{globalData.market_status}</span>
+                        </div>
+                    )}
+                </div>
+             </div>
              <div className="flex gap-4 border-l border-slate-800/60 pl-6 h-full items-center">
                  <div className="flex flex-col text-center"><span className="text-[8px] text-slate-400 uppercase font-black tracking-tighter font-bold">Net Liq</span><span className="text-xs font-black text-emerald-500 tabular-nums">${(inst.capital || 0).toLocaleString()}</span></div>
                  <div className="flex flex-col border-l border-slate-800/40 pl-4 text-center">

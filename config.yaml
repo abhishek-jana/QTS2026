@@ -7,16 +7,16 @@ data_engine:
   storage_path: data/uqts_v2_intraday.ddb
   timeframe: 15Min
 execution_muscle:
-  latency_stress_test: true #buys next day evening at 4:00 PM instead of 9:30 AM
-  max_position_size: 0.10
+  latency_stress_test: true
+  max_position_size: 0.1
   min_belief_threshold: 0.65
-  risk_parity_sizing: false
   mpc_solver:
     horizon: 5
     impact_penalty: 0.01
     variance_penalty: 0.1
   oms:
     base_url: https://paper-api.alpaca.markets
+  risk_parity_sizing: false
   safety_limits:
     kill_switch_enabled: true
     max_notional_per_order: 50000.0
@@ -32,12 +32,12 @@ model_pipeline:
   rl_training:
     total_timesteps: 1000000
   timeframes:
-    train_start: '2019-01-01'
-    train_end: '2023-12-31'
-    test_start: '2024-01-01'
-    test_end: 'now'
-    validation_split_pct: 0.15
     temporal_decay_lambda: 0.0025
+    test_end: now
+    test_start: '2024-01-01'
+    train_end: '2023-12-31'
+    train_start: '2019-01-01'
+    validation_split_pct: 0.15
   training:
     batch_size: 512
     dropout: 0.3

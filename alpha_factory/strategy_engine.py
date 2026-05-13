@@ -89,7 +89,8 @@ class StrategyEngine:
         
         # Extract Point-in-Time Snapshot
         lookback = self.config.get('signal_physics', {}).get('lookback_days', 63)
-        batch = self.lab.snapshot(as_of=as_of, tickers=tickers, lookback=lookback)
+        # Ferrari Fix: require_labels=False for live inference
+        batch = self.lab.snapshot(as_of=as_of, tickers=tickers, lookback=lookback, require_labels=False)
         
         if not batch:
             return {
@@ -180,7 +181,8 @@ class StrategyEngine:
     def get_ticker_diagnostics(self, ticker: str, as_of: datetime) -> Optional[Dict[str, Any]]:
         """Provides deep spectral insights for a specific ticker for UI visualization."""
         lookback = self.config.get('signal_physics', {}).get('lookback_days', 63)
-        batch = self.lab.snapshot(as_of=as_of, tickers=[ticker], lookback=lookback)
+        # Ferrari Fix: require_labels=False for live diagnostics
+        batch = self.lab.snapshot(as_of=as_of, tickers=[ticker], lookback=lookback, require_labels=False)
         if not batch: return None
         
         # 1. Extract History

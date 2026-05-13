@@ -127,13 +127,42 @@ class InferenceWorker:
             logger.info("INFERENCE WORKER: Defaulting focus ticker to SPY.")
         except: pass
 
-        # 2. Benchmark Start
+        # 2. Benchmark Start & Persistence (Ferrari State Recovery)
         start_date = datetime(2024, 1, 1)
         mask = self.spy_df['event_time'].dt.tz_localize(None) >= start_date.replace(tzinfo=None)
-        if not self.spy_df[mask].empty:
-            self.spy_start_p = float(self.spy_df[mask].iloc[0]['close'])
+        
+        if self.trading_mode != 'sim':
+            # Try to recover state from Redis
+            try:
+                hist = self.redis_client.get('uqts:live:performance_history')
+                if hist: self.performance_history = json.loads(hist)
+                
+                a_hist = self.redis_client.get('uqts:live:alpha_history')
+                if a_hist: self.alpha_history = json.loads(a_hist)
+                
+                fees = self.redis_client.get('uqts:live:cumulative_fees')
+                if fees: self.cumulative_fees = float(fees)
+                
+                saved_spy_p = self.redis_client.get('uqts:live:spy_start_p')
+                if saved_spy_p: self.spy_start_p = float(saved_spy_p)
+                
+                logger.info(f"🏎️ STATE RECOVERED: {len(self.performance_history)} days of history found.")
+            except Exception as e:
+                logger.warning(f"State recovery failed: {e}")
+
+            # If still no spy anchor, grab current price
+            if self.spy_start_p is None:
+                # Use current price if available, else latest historical
+                curr_prices = self._get_batch_prices(['SPY'], datetime.now())
+                self.spy_start_p = float(curr_prices.get('SPY', self.spy_df.iloc[-1]['close']))
+                self.redis_client.set('uqts:live:spy_start_p', self.spy_start_p)
+                logger.info(f"⚓ SPY ANCHOR SET: ${self.spy_start_p}")
         else:
-            self.spy_start_p = 1.0
+            # Sim mode always uses fixed start
+            if not self.spy_df[mask].empty:
+                self.spy_start_p = float(self.spy_df[mask].iloc[0]['close'])
+            else:
+                self.spy_start_p = 1.0
 
         if self.trading_mode == 'sim':
             logger.info("INFERENCE WORKER: Pre-computing Daily Rankings for Simulation (2024-2026)...")
@@ -162,6 +191,14 @@ class InferenceWorker:
             logger.info(f"✅ INFERENCE WORKER: Ranking Cache Ready ({len(self.sim_rankings_cache)} days).")
 
         self.is_initialized = True
+
+    def _is_market_open(self, dt):
+        """Check if US Market is currently open (9:30 - 16:00 EST)."""
+        # Note: Very basic version, doesn't handle holidays.
+        if dt.weekday() >= 5: return False
+        m_start = dt.replace(hour=9, minute=30, second=0, microsecond=0)
+        m_end = dt.replace(hour=16, minute=0, second=0, microsecond=0)
+        return m_start <= dt <= m_end
 
     def _get_rl_observation(self, ladder, nlv, cash, current_dt, starting_capital, peak_value, portfolio_returns, hedge_qty, hedge_entry_p, score_history):
         # UNIFIED PERCEPTION: Scale scores by 100x to match training and SimulationEngineV5
@@ -248,6 +285,12 @@ class InferenceWorker:
             "status": "QUEUED"
         }
 
+        # 4. Final Telemetry Build
+        # Ferrari Fix: Unify Fused Conviction across Sim/Live
+        bayesian_belief = house_view.get('belief_score', 0.5)
+        # Use the leverage from the decision we JUST MADE for today's plan
+        fused_conviction = bayesian_belief * target_lev_signal
+        
         # --- LAGGED VS INSTANT EXECUTION ---
         if self.latency_stress_test:
             # 1-Day Lag: Pull YESTERDAY'S decision to execute TODAY
@@ -286,12 +329,15 @@ class InferenceWorker:
             if decision_to_execute is None:
                 # First day: stay in cash/hold current
                 self.last_target_lev = 0.0; self.last_concentration = 5
-                return self._build_stats_bundle(nlv, conviction_belief, pos_mv, 0.0)
+                return self._build_stats_bundle(nlv, fused_conviction, pos_mv, 0.0)
         else:
             # Instant: Execute TODAY'S decision immediately
             decision_to_execute = current_decision
 
         # 3. Execute decision
+        # ... (rest of execution logic) ...
+        # (Updating the execution logic to ensure return uses fused_conviction)
+        
         should_reb = decision_to_execute['should_reb']
         target_lev = decision_to_execute['target_lev']
         concentration = decision_to_execute['concentration']
@@ -338,7 +384,7 @@ class InferenceWorker:
             total_shortfall = (shortfall_val / (nlv + 1e-6)) * 10000.0 # BPS
             self.last_shortfall = total_shortfall
 
-        return self._build_stats_bundle(nlv, conviction_belief, pos_mv, total_shortfall)
+        return self._build_stats_bundle(nlv, fused_conviction, pos_mv, total_shortfall)
 
     def _build_stats_bundle(self, nlv, conviction_belief, pos_mv, total_shortfall):
         # 1. DYNAMIC WIN RATE & SHARPE
@@ -386,6 +432,25 @@ class InferenceWorker:
         pending_json = self.redis_client.get('uqts:live:pending_decision')
         pending_decision = json.loads(pending_json) if pending_json else None
         
+        # 2. Ferrari Self-Healing: Retroactive Planning
+        # If we are offline during the 4:05 PM window, we catch up when we boot.
+        # Condition: It's after market close, we have no pending decision, and it's not currently the planning window.
+        today_str = now.strftime("%Y-%m-%d")
+        last_plan_date = self.redis_client.get('uqts:live:last_plan_date')
+        
+        should_catch_up = (
+            (now.hour >= 16 or now.hour < 15) and # We are between yesterday's close and today's execution window
+            pending_decision is None and           # We have no plan stored
+            last_plan_date != today_str and        # We haven't planned yet today
+            not is_thinking_window and             # We aren't in the official window right now
+            house_view.get('status') == "OK"       # We have model data to act on
+        )
+
+        if should_catch_up:
+            logger.warning("🏎️ RETROACTIVE PLANNING: Catch-up initiated (No trade plan found for the current session).")
+            # We trigger the thinking logic below by forcing the flag
+            is_thinking_window = True 
+
         # Hydrate State
         nlv, _ = await self.live_bot.hydrate_state()
         self.peak_value = max(self.peak_value, nlv)
@@ -400,7 +465,7 @@ class InferenceWorker:
             today_str = now.strftime("%Y-%m-%d")
             
             if last_plan_date != today_str:
-                obs, conviction_belief = self._get_rl_observation(house_view['ladder'], nlv, nlv - long_mv, now, 100000.0, self.peak_value, [], 0.0, 0.0, [])
+                obs, _ = self._get_rl_observation(house_view['ladder'], nlv, nlv - long_mv, now, 100000.0, self.peak_value, [], 0.0, 0.0, [])
                 if self.rl_pilot:
                     act, _ = self.rl_pilot.predict(obs, deterministic=True)
                     target_lev = 1.0 if act[0] > 0.5 else 0.0
@@ -494,19 +559,34 @@ class InferenceWorker:
                 logger.success(f"✅ [EXECUTION] MOC Orders Dispatched.")
 
         # --- PHASE C: CONTINUOUS TELEMETRY ---
-        # We still need to return stats to the UI even if not trading
-        obs, conviction_belief = self._get_rl_observation(house_view['ladder'], nlv, nlv - long_mv, now, 100000.0, self.peak_value, [], 0.0, 0.0, [])
+        # Ferrari Fix: Fused Conviction Logic
+        bayesian_belief = house_view.get('belief_score', 0.5)
+        
+        # If RL Pilot is active, use its decision as an additional confidence layer
+        rl_leverage = 0.0
+        if house_view.get('status') == "OK":
+            obs, _ = self._get_rl_observation(house_view['ladder'], nlv, nlv - long_mv, now, 100000.0, self.peak_value, [], 0.0, 0.0, [])
+            if self.rl_pilot:
+                act, _ = self.rl_pilot.predict(obs, deterministic=True)
+                rl_leverage = float(act[0])
+            else:
+                rl_leverage = 1.0 # Default if no pilot
+        
+        # Conviction = Bayesian Model Integrity * RL Expected Action
+        # This makes it move much more significantly (0-100%)
+        fused_conviction = bayesian_belief * rl_leverage
+        
         sector_stats, _ = self._get_sector_exposure(self.live_bot.positions, prices, nlv)
         active_pos_count = len([q for q in self.live_bot.positions.values() if q != 0])
         
         return {
-            "nlv": nlv, "conviction": conviction_belief, 
+            "nlv": nlv, "conviction": fused_conviction, 
             "leverage": pending_decision['target_lev'] if pending_decision else 0.0, 
             "hedge": 0.0, 
             "concentration": pending_decision['concentration'] if pending_decision else 5,
             "active_pos": active_pos_count, "sector_exposure": sector_stats, "gross_exposure": (long_mv/nlv*100) if nlv > 0 else 0,
             "buying_power": nlv-long_mv, "roe": roe, "shortfall": getattr(self, 'last_shortfall_live', 0.0), "cumulative_fees": self.cumulative_fees,
-            "sensors": {"win_rate": 0, "max_dd": (nlv-self.peak_value)/(self.peak_value+1e-6)*100, "ic": 0.1914, "sharpe": 2.45},
+            "sensors": {"win_rate": 0, "max_dd": (nlv-self.peak_value)/(self.peak_value+1e-6)*100, "ic": getattr(self, 'realized_ic', 0.1914), "sharpe": 2.45},
             "pending_decision": pending_decision # Surface to payload
         }
 
@@ -541,7 +621,9 @@ class InferenceWorker:
             asyncio.create_task(self.live_bot.run_stream())
             logger.info("INFERENCE WORKER: Live Stream Task Started.")
 
+        tick = 0
         while not self.is_killed:
+            tick += 1
             if not self.is_initialized:
                 await asyncio.sleep(1); continue
 
@@ -625,8 +707,17 @@ class InferenceWorker:
                 new_alpha = ((float(stats['nlv'])/100000.0)-(float(spy_cap)/100000.0))*100.0
                 self.alpha_history.append({"time": timestamp_str, "alpha": new_alpha})
 
+                # Ferrari State Persistence (Sync to Redis)
+                if self.trading_mode != 'sim' and tick % 10 == 0:
+                    try:
+                        self.redis_client.set('uqts:live:performance_history', json.dumps(self.performance_history))
+                        self.redis_client.set('uqts:live:alpha_history', json.dumps(self.alpha_history))
+                        self.redis_client.set('uqts:live:cumulative_fees', self.cumulative_fees)
+                    except: pass
+
                 payload = {
                     "timestamp": self.current_knowledge_time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "market_status": "OPEN" if self._is_market_open(self.current_knowledge_time) else "CLOSED",
                     "metacognition": {"policy_conviction": float(stats['conviction']), "rl_leverage": float(stats['leverage']), "rl_hedge": 0.0, "concentration": int(stats['concentration']), "strategy_sensors": stats['sensors'], "alpha_gain": self.alpha_history},
                     "institutional": {
                         "capital": float(stats['nlv']), "active_positions": int(stats['active_pos']), "gross_exposure": float(stats['gross_exposure']), "buying_power": float(stats['buying_power']),
