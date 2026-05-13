@@ -672,6 +672,43 @@ export default function MissionControl() {
                  </div>
                </div>
                <AlphaGainChart data={meta.alpha_gain} />
+               {inst.pending_decision && (
+                    <div className="bg-emerald-500/5 border border-emerald-500/20 p-2 mt-4 rounded-sm animate-pulse">
+                        <div className="text-[9px] font-black text-emerald-400 uppercase tracking-[0.2em] mb-2 flex justify-between border-b border-emerald-900/40 pb-1">
+                            <span>🔮 Strategy Queue (Next Day)</span>
+                            <span>Lev: {inst.pending_decision.target_lev}x</span>
+                        </div>
+                        
+                        <div className="space-y-2">
+                            <div className="flex flex-wrap gap-1">
+                                <span className="text-[8px] text-slate-500 font-black w-8 uppercase pt-1">Picks:</span>
+                                {inst.pending_decision.ladder?.map(x => (
+                                    <span key={x.ticker} className="text-[9px] px-1.5 py-0.5 bg-black border border-emerald-900/50 text-emerald-500 font-bold uppercase">{x.ticker} ({x.qty})</span>
+                                ))}
+                            </div>
+
+                            {inst.pending_decision.adds_display?.length > 0 && (
+                                <div className="flex flex-wrap gap-1">
+                                    <span className="text-[8px] text-emerald-600 font-black w-8 uppercase pt-1">Adds :</span>
+                                    {inst.pending_decision.adds_display.map(str => (
+                                        <span key={str} className="text-[9px] px-1.5 py-0.5 bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 font-bold uppercase">{str}</span>
+                                    ))}
+                                </div>
+                            )}
+
+                            {inst.pending_decision.sells_display?.length > 0 && (
+                                <div className="flex flex-wrap gap-1">
+                                    <span className="text-[8px] text-rose-600 font-black w-8 uppercase pt-1">Sells:</span>
+                                    {inst.pending_decision.sells_display.map(str => (
+                                        <span key={str} className="text-[9px] px-1.5 py-0.5 bg-rose-500/10 border border-rose-500/30 text-rose-400 font-bold uppercase">{str}</span>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+
+                        <div className="text-[8px] text-slate-500 mt-2 italic font-bold border-t border-slate-900 pt-1">Planned at {inst.pending_decision.date} :: Dispatches at 15:50 EST</div>
+                    </div>
+                )}
             </div>
           )}
         </Panel>

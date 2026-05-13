@@ -228,17 +228,59 @@ class InferenceWorker:
             should_reb_signal = (self.current_knowledge_time.weekday() == 0) or is_first_step
             target_lev_signal = 1.0; concentration_signal = 12
 
+        # ESTIMATE QUANTITIES FOR PLANNING
+        target_notional = nlv * target_lev_signal
+        target_weights = self._calculate_target_weights(house_view['ladder'], concentration_signal)
+        
+        picks_with_qty = []
+        for t, w in target_weights.items():
+            p = self.sim_price_memory.get(t, 0)
+            qty = int((target_notional * w) / p) if p > 0 else 0
+            picks_with_qty.append({"ticker": t, "qty": qty, "score": next(x['score'] for x in house_view['ladder'] if x['ticker'] == t)})
+
         current_decision = {
+            "date": self.current_knowledge_time.strftime("%Y-%m-%d"),
             "should_reb": should_reb_signal,
             "target_lev": target_lev_signal,
             "concentration": concentration_signal,
-            "ladder": house_view['ladder']
+            "ladder": picks_with_qty,
+            "status": "QUEUED"
         }
 
-        # 2. --- LAGGED VS INSTANT EXECUTION ---
+        # --- LAGGED VS INSTANT EXECUTION ---
         if self.latency_stress_test:
             # 1-Day Lag: Pull YESTERDAY'S decision to execute TODAY
             decision_to_execute = self.sim_signal_queue
+            
+            # Print planning log for NEXT day
+            if should_reb_signal:
+                current_tickers = {t: q for t, q in self.sim_positions.items() if q > 0 and t != "SPY"}
+                
+                adds = []
+                for item in picks_with_qty:
+                    t, q = item['ticker'], item['qty']
+                    curr_q = current_tickers.get(t, 0)
+                    if q > curr_q: adds.append(f"{t}(+{q-curr_q})")
+                
+                sells = []
+                planned_tickers = [x['ticker'] for x in picks_with_qty]
+                for t, q in current_tickers.items():
+                    if t not in planned_tickers:
+                        sells.append(f"{t}(-{q})")
+                    else:
+                        target_q = next(x['qty'] for x in picks_with_qty if x['ticker'] == t)
+                        if target_q < q: sells.append(f"{t}(-{q-target_q})")
+
+                picks_display = [f"{x['ticker']}({x['qty']})" for x in picks_with_qty]
+                log_msg = f"🔮 [PLANNING] AI Decision Queued for Next Day: Lev {target_lev_signal}x\n"
+                log_msg += f"   >> PICKS: {picks_display}\n"
+                if adds: log_msg += f"   >> ADDS : {adds}\n"
+                if sells: log_msg += f"   >> SELLS: {sells}"
+                logger.info(log_msg)
+                
+                current_decision['adds_display'] = adds
+                current_decision['sells_display'] = sells
+
             self.sim_signal_queue = current_decision # Store today's for tomorrow
             if decision_to_execute is None:
                 # First day: stay in cash/hold current
@@ -325,11 +367,13 @@ class InferenceWorker:
         sector_stats, _ = self._get_sector_exposure(self.sim_positions, self.sim_price_memory, nlv)
         active_pos_count = len([q for q in self.sim_positions.values() if q != 0])
         
+        roe = (nlv / 100000.0 - 1.0) * 100.0
         return {
             "nlv": nlv, "conviction": conviction_belief, "leverage": getattr(self, 'last_target_lev', 0.0), "hedge": 0.0, "concentration": getattr(self, 'last_concentration', 5),
             "active_pos": active_pos_count, "sector_exposure": sector_stats, "gross_exposure": (pos_mv/nlv*100) if nlv > 0 else 0,
-            "buying_power": self.sim_cash, "roe": 0.0, "shortfall": total_shortfall,
-            "sensors": {"win_rate": win_rate, "max_dd": (nlv-self.peak_value)/(self.peak_value+1e-6)*100, "ic": getattr(self, 'realized_ic', 0.1914), "sharpe": sharpe}
+            "buying_power": self.sim_cash, "roe": roe, "shortfall": total_shortfall,
+            "sensors": {"win_rate": win_rate, "max_dd": (nlv-self.peak_value)/(self.peak_value+1e-6)*100, "ic": getattr(self, 'realized_ic', 0.1914), "sharpe": sharpe},
+            "pending_decision": self.sim_signal_queue # Surface sim lag to UI
         }
 
     async def _update_oms_live(self, house_view):
@@ -346,6 +390,7 @@ class InferenceWorker:
         self.peak_value = max(self.peak_value, nlv)
         prices = self._get_batch_prices(self.tickers, now)
         long_mv = sum(qty * prices.get(t, 0) for t, qty in self.live_bot.positions.items())
+        roe = (nlv / 100000.0 - 1.0) * 100.0
 
         # --- PHASE A: THE THINKING WINDOW (PLANNING) ---
         if is_thinking_window:
@@ -362,17 +407,51 @@ class InferenceWorker:
                 else:
                     target_lev = 1.0; concentration = 12
 
+                # ESTIMATE QUANTITIES FOR PLANNING
+                target_notional = nlv * target_lev
+                target_weights = self._calculate_target_weights(house_view['ladder'], concentration)
+                
+                picks_with_qty = []
+                for t, w in target_weights.items():
+                    p = prices.get(t, 0)
+                    qty = int((target_notional * w) / p) if p > 0 else 0
+                    picks_with_qty.append({"ticker": t, "qty": qty, "score": next(x['score'] for x in house_view['ladder'] if x['ticker'] == t)})
+
+                current_tickers = {t: q for t, q in self.live_bot.positions.items() if q > 0 and t != "SPY"}
+                adds = []
+                for item in picks_with_qty:
+                    t, q = item['ticker'], item['qty']
+                    curr_q = current_tickers.get(t, 0)
+                    if q > curr_q: adds.append(f"{t}(+{q-curr_q})")
+                
+                sells = []
+                planned_tickers = [x['ticker'] for x in picks_with_qty]
+                for t, q in current_tickers.items():
+                    if t not in planned_tickers:
+                        sells.append(f"{t}(-{q})")
+                    else:
+                        target_q = next(x['qty'] for x in picks_with_qty if x['ticker'] == t)
+                        if target_q < q: sells.append(f"{t}(-{q-target_q})")
+
                 # Store the frozen decision for tomorrow
                 decision = {
                     "date": today_str,
                     "target_lev": target_lev,
                     "concentration": concentration,
-                    "ladder": house_view['ladder'][:concentration], # Store only needed picks
+                    "ladder": picks_with_qty,
+                    "adds_display": adds,
+                    "sells_display": sells,
                     "status": "QUEUED"
                 }
                 self.redis_client.set('uqts:live:pending_decision', json.dumps(decision))
                 self.redis_client.set('uqts:live:last_plan_date', today_str)
-                logger.success(f"🔮 [PLANNING] AI Decision Queued for tomorrow: Lev {target_lev}x | Conc {concentration}")
+                
+                picks_display = [f"{x['ticker']}({x['qty']})" for x in picks_with_qty]
+                log_msg = f"🔮 [PLANNING] AI Decision Queued for tomorrow: Lev {target_lev}x\n"
+                log_msg += f"   >> PICKS: {picks_display}\n"
+                if adds: log_msg += f"   >> ADDS : {adds}\n"
+                if sells: log_msg += f"   >> SELLS: {sells}"
+                logger.success(log_msg)
 
         # --- PHASE B: THE EXECUTION WINDOW (MOC) ---
         if is_execution_window and pending_decision:
@@ -425,8 +504,9 @@ class InferenceWorker:
             "hedge": 0.0, 
             "concentration": pending_decision['concentration'] if pending_decision else 5,
             "active_pos": active_pos_count, "sector_exposure": sector_stats, "gross_exposure": (long_mv/nlv*100) if nlv > 0 else 0,
-            "buying_power": nlv-long_mv, "roe": 0.0, "shortfall": getattr(self, 'last_shortfall_live', 0.0), "cumulative_fees": self.cumulative_fees,
-            "sensors": {"win_rate": 0, "max_dd": (nlv-self.peak_value)/(self.peak_value+1e-6)*100, "ic": 0.1914, "sharpe": 2.45}
+            "buying_power": nlv-long_mv, "roe": roe, "shortfall": getattr(self, 'last_shortfall_live', 0.0), "cumulative_fees": self.cumulative_fees,
+            "sensors": {"win_rate": 0, "max_dd": (nlv-self.peak_value)/(self.peak_value+1e-6)*100, "ic": 0.1914, "sharpe": 2.45},
+            "pending_decision": pending_decision # Surface to payload
         }
 
     def _get_sector_exposure(self, positions, prices, nlv):
