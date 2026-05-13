@@ -116,7 +116,6 @@ class InferenceWorker:
         self.live_bot = None
         if self.trading_mode in ['paper', 'live']:
             self.live_bot = AsyncPaperBot(self.config, 100000.0)
-            asyncio.create_task(self.live_bot.run_stream())
             logger.info("INFERENCE WORKER: Live Bridge active.")
         
         self.is_killed = False
@@ -537,6 +536,11 @@ class InferenceWorker:
 
     async def run(self):
         logger.info(f"INFERENCE WORKER: MASTER SNIPER STARTING ({self.trading_mode})")
+        
+        if self.live_bot:
+            asyncio.create_task(self.live_bot.run_stream())
+            logger.info("INFERENCE WORKER: Live Stream Task Started.")
+
         while not self.is_killed:
             if not self.is_initialized:
                 await asyncio.sleep(1); continue
