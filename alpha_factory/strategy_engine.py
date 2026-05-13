@@ -122,7 +122,8 @@ class StrategyEngine:
             # Vectorized Signal Energy (Spatial Wavelet mean magnitude)
             energy_all = torch.zeros(len(batch.tickers))
             if 'x_past_x_spatial' in batch.data:
-                energy_all = torch.mean(torch.abs(batch.data['x_past_x_spatial']), dim=(1, 2)).cpu()
+                # Ferrari robust reduction: mean everything after the batch dimension
+                energy_all = torch.mean(torch.abs(batch.data['x_past_x_spatial']).flatten(1), dim=1).cpu()
 
         # Build House View Ladder
         ladder = []

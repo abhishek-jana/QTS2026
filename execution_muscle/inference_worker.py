@@ -25,8 +25,10 @@ from execution_muscle.risk_parity_sizer import RiskParitySizer
 
 class NumpyEncoder(json.JSONEncoder):
     def default(self, obj):
-        if hasattr(obj, 'item'): return obj.item()
-        if isinstance(obj, np.ndarray): return obj.tolist()
+        if isinstance(obj, (np.integer, np.floating, np.bool_)):
+            return obj.item()
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
         return super(NumpyEncoder, self).default(obj)
 
 class InferenceWorker:
@@ -584,12 +586,21 @@ class InferenceWorker:
                     
                     focused = self.redis_client.get('uqts:focused_ticker')
                     if focused:
-                        try:
-                            diag = self.strategy.get_ticker_diagnostics(focused, as_of=self.current_knowledge_time)
-                            if diag:
-                                pld = { "type": "SPECTRAL_UPDATE", "spectral": { "ticker": focused, "history": diag['history'], "cwt": diag['cwt'].tolist(), "adf_p_value": float(diag['adf_p']), "shap_values": diag['shap_fusion'] } }
-                                self.redis_client.publish(f'uqts:spectral:{focused}', json.dumps(pld, cls=NumpyEncoder))
-                        except: pass
+                        diag = self.strategy.get_ticker_diagnostics(focused, as_of=self.current_knowledge_time)
+                        if diag:
+                            pld = { 
+                                "type": "SPECTRAL_UPDATE", 
+                                "spectral": { 
+                                    "ticker": focused, 
+                                    "history": diag['history'], 
+                                    "cwt": diag['cwt'], # NumpyEncoder will handle list conversion
+                                    "adf_p_value": diag['adf_p'], 
+                                    "shap_values": diag['shap_fusion'] 
+                                } 
+                            }
+                            self.redis_client.publish(f'uqts:spectral:{focused}', json.dumps(pld, cls=NumpyEncoder))
+                        else:
+                            logger.warning(f"📉 SPECTRAL DRIFT: No data for {focused} as of {self.current_knowledge_time}")
 
                     spy_p = prices.get('SPY', self.spy_start_p or 1.0)
                     spy_cap = (spy_p / self.spy_start_p) * 100000.0 if self.spy_start_p else 100000.0
@@ -625,7 +636,15 @@ class InferenceWorker:
                     }
                     self.redis_client.publish('uqts:global', json.dumps(payload, cls=NumpyEncoder))
             
-            if self.trading_mode == 'sim': self.current_knowledge_time += timedelta(days=1)
+            if self.trading_mode == 'sim': 
+                self.current_knowledge_time += timedelta(days=1)
+                # RESET SIMULATION IF DATA EXHAUSTED ( Ferrari Auto-Loop )
+                if self.current_knowledge_time > datetime.now():
+                    logger.info("🔄 SIMULATION COMPLETE. RESETTING HORIZON...")
+                    self.current_knowledge_time = datetime(2024, 1, 1, 16, 0, 0)
+                    self.performance_history = []
+                    self.alpha_history = []
+            
             await asyncio.sleep(self.update_interval)
 
 if __name__ == "__main__":
