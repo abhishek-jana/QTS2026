@@ -102,48 +102,71 @@ class InstitutionalIngestor:
         pbar.close()
 
     def _fetch_tiingo_range(self, ticker, start, end, freq):
+        import time as time_module
         url = f"https://api.tiingo.com/iex/{ticker}/prices"
+        
+        if end == "now":
+            end = pd.Timestamp.now(tz='UTC').strftime('%Y-%m-%d %H:%M:%S')
+            
         params = {"startDate": start, "endDate": end, "resampleFreq": freq, "token": self.tiingo_api_key}
-        try:
-            resp = requests.get(url, params=params)
-            if resp.status_code == 200:
-                bars = resp.json()
-                if bars:
-                    df = pd.DataFrame([{
-                        'ticker': ticker, 'event_time': pd.to_datetime(b['date']),
-                        'knowledge_time': pd.to_datetime(b['date']),
-                        'open': float(b['open']), 'high': float(b['high']),
-                        'low': float(b['low']), 'close': float(b['close']),
-                        'volume': int(b['volume']), 'is_correction': False
-                    } for b in bars])
-                    self.engine.insert_dataframe(df)
-        except: pass
+        
+        max_retries = 5
+        base_delay = 2.0
+        
+        for attempt in range(max_retries):
+            try:
+                resp = requests.get(url, params=params)
+                if resp.status_code == 200:
+                    bars = resp.json()
+                    if bars:
+                        df = pd.DataFrame([{
+                            'ticker': ticker, 'event_time': pd.to_datetime(b['date']),
+                            'knowledge_time': pd.to_datetime(b['date']),
+                            'open': float(b['open']), 'high': float(b['high']),
+                            'low': float(b['low']), 'close': float(b['close']),
+                            'volume': int(b.get('volume', 0)), 'is_correction': False
+                        } for b in bars])
+                        self.engine.insert_dataframe(df)
+                    break
+                elif resp.status_code == 429:
+                    delay = base_delay * (2 ** attempt)
+                    logger.warning(f"Rate limited on {ticker}. Retrying in {delay:.1f}s...")
+                    time_module.sleep(delay)
+                else:
+                    logger.error(f"Tiingo Error ({ticker}): {resp.status_code}")
+                    break
+            except Exception as e:
+                logger.error(f"Request Exception ({ticker}): {e}")
+                break
 
     def _ingest_alpaca(self, tickers: list, start_date: str, end_date: str):
         base_url = "https://data.alpaca.markets/v2/stocks/bars"
-        try:
-            requested_start = pd.to_datetime(start_date)
-            missing = []
-            for ticker in tickers:
-                res = self.engine.conn.execute(f"SELECT MIN(event_time) FROM market_data WHERE ticker = '{ticker}'").fetchone()
-                if not res or res[0] is None or res[0] > requested_start:
-                    missing.append(ticker)
-            
-            if not missing:
-                logger.info("✅ ALL TICKERS IN RANGE: Skipping ingestion.")
-                return
-        except Exception as e: 
-            logger.warning(f"Ingestion check failed ({e}), defaulting to full fetch.")
-            missing = tickers
+        
+        missing = tickers
+        if not missing:
+            logger.info("✅ ALL TICKERS IN RANGE: Skipping ingestion.")
+            return
 
         logger.info(f"📡 Alpaca Ingestion: Fetching {len(missing)} tickers from {start_date}...")
         
         headers = {"APCA-API-KEY-ID": self.alpaca_api_key, "APCA-API-SECRET-KEY": self.alpaca_api_secret}
-        timeframe = self.config.get('data_engine', {}).get('timeframe', '1Day')
+        # Force timeframe to match config (e.g. 15Min for Alpaca)
+        timeframe = self.config.get('data_engine', {}).get('timeframe', '15Min')
         all_data = []
         total_inserted = 0
 
         pbar = tqdm(total=len(missing), desc="📊 Ingesting Alpaca Data", unit="ticker")
+
+        # Convert dates to strict RFC3339 format for Alpaca
+        def to_rfc3339(date_str):
+            if date_str == "now":
+                return pd.Timestamp.now(tz='UTC').isoformat()
+            dt = pd.to_datetime(date_str)
+            if dt.tzinfo is None: dt = dt.tz_localize('UTC')
+            return dt.isoformat()
+            
+        alpaca_start = to_rfc3339(start_date)
+        alpaca_end = to_rfc3339(end_date)
 
         for chunk_idx in range(0, len(missing), 100):
             chunk = missing[chunk_idx : chunk_idx + 100]
@@ -152,7 +175,7 @@ class InstitutionalIngestor:
             while True:
                 params = {
                     "symbols": ",".join(chunk), "timeframe": timeframe,
-                    "start": start_date, "end": end_date,
+                    "start": alpaca_start, "end": alpaca_end,
                     "adjustment": "raw", "feed": "iex", "limit": 10000
                 }
                 if page_token: params["page_token"] = page_token
@@ -172,13 +195,16 @@ class InstitutionalIngestor:
 
                     for bar in ticker_bars:
                         evt_time = pd.to_datetime(bar['t'])
-                        evt_est = evt_time.tz_convert('US/Eastern') if evt_time.tzinfo else evt_time.tz_localize('UTC').tz_convert('US/Eastern')
-                        if not (time(9, 30) <= evt_est.time() < time(16, 0)): continue
+                        # Alpaca returns UTC. Convert to naive US/Eastern so it matches DuckDB storage format.
+                        evt_est = evt_time.tz_convert('US/Eastern').tz_localize(None)
+                        
+                        # Market hours filter: 9:30 AM to 4:00 PM EST inclusive
+                        if not (time(9, 30) <= evt_est.time() <= time(16, 0)): continue
 
-                        k_time = evt_time if timeframe != '1Day' else evt_time.replace(hour=16, minute=0)
+                        k_time = evt_est if timeframe != '1Day' else evt_est.replace(hour=16, minute=0)
                             
                         all_data.append({
-                            'ticker': ticker, 'event_time': evt_time, 'knowledge_time': k_time,
+                            'ticker': ticker, 'event_time': evt_est, 'knowledge_time': k_time,
                             'open': float(bar['o']), 'high': float(bar['h']), 'low': float(bar['l']), 
                             'close': float(bar['c']), 'volume': int(bar['v']), 'is_correction': False
                         })
@@ -203,6 +229,9 @@ class InstitutionalIngestor:
         
         resample_freq = timeframe.lower().replace('min', 'min').replace('day', 'day').replace('hour', 'hour')
         
+        if end_date == "now":
+            end_date = pd.Timestamp.now(tz='UTC').strftime('%Y-%m-%d %H:%M:%S')
+            
         total_inserted = 0
         pbar = tqdm(tickers, desc="📊 Ingesting Tiingo Data", unit="ticker")
         
@@ -256,7 +285,7 @@ class InstitutionalIngestor:
                     'knowledge_time': evt_time if timeframe != '1Day' else evt_time.replace(hour=16, minute=0),
                     'open': float(bar['open']), 'high': float(bar['high']),
                     'low': float(bar['low']), 'close': float(bar['close']),
-                    'volume': int(bar['volume']), 'is_correction': False
+                    'volume': int(bar.get('volume', 0)), 'is_correction': False
                 })
             
             if df_bars:

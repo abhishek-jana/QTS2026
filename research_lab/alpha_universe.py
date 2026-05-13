@@ -107,6 +107,13 @@ class AlphaUniverse:
             fetch_start = as_of - timedelta(days=days_back)
             batch_view = self.get_batch_pit_view(tickers, as_of, start_time=fetch_start)
             if batch_view.empty: return None
+
+            # SANITIZATION: Fill data gaps per ticker
+            fill_cols = ['open', 'high', 'low', 'close', 'volume']
+            for col in fill_cols:
+                if col in batch_view.columns:
+                    batch_view[col] = batch_view.groupby('ticker')[col].ffill().bfill()
+
             shard_override = {t: batch_view[batch_view['ticker'] == t] for t in tickers}
             
         final_labels_df = labels_override
@@ -199,6 +206,14 @@ class AlphaUniverse:
         all_history = self.get_batch_pit_view(universe, data_fetch_limit, start_time=fetch_start)
         if all_history.empty: return []
             
+        # SANITIZATION: Fill data gaps per ticker (Forward-Fill then Backward-Fill)
+        # This prevents NaNs from breaking wavelet transforms and signal physics.
+        logger.info(f"🛠️ AlphaUniverse: Sanitizing {len(all_history)} rows of historical data...")
+        fill_cols = ['open', 'high', 'low', 'close', 'volume']
+        for col in fill_cols:
+            if col in all_history.columns:
+                all_history[col] = all_history.groupby('ticker')[col].ffill().bfill()
+
         # Target: 3-day Residual Log-Returns
         self.precomputed_labels = self.labeler.generate_labels(all_history, horizon_days=self.horizon, timeframe=self.timeframe)
         

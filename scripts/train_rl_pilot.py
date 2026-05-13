@@ -6,6 +6,7 @@ import numpy as np
 import multiprocessing
 import random
 import torch
+import glob
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor
 from stable_baselines3.common.callbacks import CheckpointCallback
@@ -27,7 +28,7 @@ def make_env(rankings_df, prices_df, vols_df, spy_df, seed=42, rank=0):
         return env
     return _init
 
-def train_rl_pilot(total_timesteps=2000000, seed=42, n_envs=None):
+def train_rl_pilot(total_timesteps=2000000, seed=42, n_envs=None, resume=False):
     logger.info("🎬 Initiating HIGH-THROUGHPUT RL Training (Phase 4: The Survivor)...")
     
     # 1. Load Pre-computed Data
@@ -45,47 +46,51 @@ def train_rl_pilot(total_timesteps=2000000, seed=42, n_envs=None):
     vols_df = pd.read_csv(vols_path, index_col=0, parse_dates=True)
     spy_df = pd.read_csv(spy_path, index_col=0, parse_dates=True)
 
-    # --- SENIOR FIX (V7.4): PERMANENT NAN SAFEGUARD ---
-    # Automatically clean incoming training data to prevent NaN-induced gradient collapse.
-    logger.info("🛡️ Pre-Flight Check: Sanitizing RL Training Data...")
+    # --- PERMANENT NAN SAFEGUARD ---
     rankings_df = rankings_df.ffill().bfill().fillna(0)
     prices_df = prices_df.ffill().bfill().fillna(0)
     vols_df = vols_df.ffill().bfill().fillna(0.02)
     spy_df = spy_df.ffill().bfill().fillna(0)
     
-    # 2. Setup Parallel Environments (SENIOR OPTIMIZATION)
-    # USER BENCHMARK: 12 logical threads proved faster than 6 physical cores 
-    # for this specific memory/CPU configuration.
     if n_envs is None:
         n_envs = 12
     
     logger.info(f"🚀 Spawning {n_envs} parallel market environments with Seed {seed}...")
     
     env = SubprocVecEnv([make_env(rankings_df, prices_df, vols_df, spy_df, seed=seed, rank=i) for i in range(n_envs)])
-    env = VecMonitor(env) # Track stats across all envs
+    env = VecMonitor(env)
     
     # 3. Initialize Agent
     n_steps = 2048   
     batch_size = 64 
     
-    model = PPO(
-        "MlpPolicy", 
-        env, 
-        verbose=1,
-        learning_rate=3e-4,
-        n_steps=n_steps,
-        batch_size=batch_size,
-        n_epochs=10,
-        gamma=0.99,
-        gae_lambda=0.95,
-        clip_range=0.2,
-        ent_coef=0.01, # Policy crystallization
-        device="cpu",
-        seed=seed
-    )
+    if resume:
+        checkpoints = glob.glob("./models/rl_checkpoints/rl_pilot_v7_4_survivor_*.zip")
+        if not checkpoints:
+            logger.error("❌ Resume requested but no checkpoints found in ./models/rl_checkpoints/")
+            return
+        latest_checkpoint = max(checkpoints, key=os.path.getctime)
+        logger.info(f"🔄 Resuming from checkpoint: {latest_checkpoint}")
+        model = PPO.load(latest_checkpoint, env=env, verbose=1, device="cpu")
+    else:
+        model = PPO(
+            "MlpPolicy", 
+            env, 
+            verbose=1,
+            learning_rate=3e-4,
+            n_steps=n_steps,
+            batch_size=batch_size,
+            n_epochs=10,
+            gamma=0.99,
+            gae_lambda=0.95,
+            clip_range=0.2,
+            ent_coef=0.01,
+            device="cpu",
+            seed=seed
+        )
     
     # 4. Train
-    logger.info(f"📊 Training for {total_timesteps} steps ({total_timesteps // (n_steps * n_envs)} iterations)...")
+    logger.info(f"📊 Training for {total_timesteps} steps...")
     
     checkpoint_callback = CheckpointCallback(
         save_freq=max(1, 100000 // n_envs), 
@@ -93,7 +98,7 @@ def train_rl_pilot(total_timesteps=2000000, seed=42, n_envs=None):
         name_prefix='rl_pilot_v7_4_survivor'
     )
     
-    model.learn(total_timesteps=total_timesteps, callback=checkpoint_callback)
+    model.learn(total_timesteps=total_timesteps, callback=checkpoint_callback, reset_num_timesteps=not resume)
     
     # 5. Save Final Policy
     os.makedirs("models", exist_ok=True)
@@ -104,6 +109,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="UQTS-2026 Phase 4 Parallel RL Trainer")
     parser.add_argument("--total-timesteps", type=int, default=2000000)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--n-envs", type=int, default=None, help="Number of parallel envs (default: 6 physical cores)")
+    parser.add_argument("--n-envs", type=int, default=None)
+    parser.add_argument("--resume", action="store_true", help="Resume from latest checkpoint")
     args = parser.parse_args()
-    train_rl_pilot(total_timesteps=args.total_timesteps, seed=args.seed, n_envs=args.n_envs)
+    train_rl_pilot(total_timesteps=args.total_timesteps, seed=args.seed, n_envs=args.n_envs, resume=args.resume)
+

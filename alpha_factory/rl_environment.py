@@ -124,9 +124,19 @@ class PortfolioGym(gym.Env):
         if should_rebalance:
             scores = self.rankings_np[self.current_step]
             top_k_indices = np.argsort(scores)[-self.last_n_stocks:][::-1]
+
+            # Robust Training: Read strict settings from rl_training_physics
+            temp = self.config.get('rl_training_physics', {}).get('allocation_temperature', 0.5)
+            asset_cap = self.config.get('rl_training_physics', {}).get('max_single_asset_cap', 0.15)
+
             top_scores = scores[top_k_indices]
-            exp_scores = np.exp((top_scores - np.max(top_scores)) / 0.5)
+            exp_scores = np.exp((top_scores - np.max(top_scores)) / temp)
             weights = exp_scores / (np.sum(exp_scores) + 1e-9)
+            
+            # Enforce safety cap and redistribute
+            if np.max(weights) > asset_cap:
+                weights = np.clip(weights, 0, asset_cap)
+                weights = weights / (np.sum(weights) + 1e-9)
             
             target_notion = self.account_value * self.last_target_lev
             new_positions = {}

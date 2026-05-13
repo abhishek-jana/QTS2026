@@ -155,9 +155,20 @@ class MonteCarloStressTest:
 
             if should_rebalance:
                 target_notional = (nlv * last_lev); top_picks = sorted(scores_dict.keys(), key=lambda x: scores_dict[x], reverse=True)[:last_conc]
+                
+                # High-Density Allocation Logic: Read from config
+                temp = self.config.get('execution_muscle', {}).get('allocation_temperature', 0.5)
+                asset_cap = self.config.get('execution_muscle', {}).get('max_single_asset_cap', 0.15)
+                
                 top_scores = np.array([scores_dict.get(x, -9) for x in top_picks]) * 100.0
-                exp_scores = np.exp((top_scores - np.max(top_scores)) / 0.5)
-                weights = np.clip(exp_scores / (np.sum(exp_scores) + 1e-9), 0.0, 1.0); weights = weights / (np.sum(weights) + 1e-9)
+                exp_scores = np.exp((top_scores - np.max(top_scores)) / temp)
+                weights = exp_scores / (np.sum(exp_scores) + 1e-9)
+                
+                # Enforce safety cap and redistribute
+                if np.max(weights) > asset_cap:
+                    weights = np.clip(weights, 0, asset_cap)
+                    weights = weights / np.sum(weights)
+                
                 fric = 0.0050 if is_jump and jump_multiplier < 1.0 else 0.0005
                 turnover = 0.0; trade_prices = prices * jump_multiplier
                 for t in list(positions.keys()):

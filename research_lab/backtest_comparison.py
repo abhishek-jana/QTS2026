@@ -39,7 +39,7 @@ class BacktestOrchestrator:
         for k, v in env_keys.items(): 
             if v: setattr(ingestor, k.lower() if 'API' not in k else k.lower(), v)
             
-        ingestor.ingest_universe(self.tickers, self.config['data_engine']['start_date'], datetime.now().strftime("%Y-%m-%d"))
+        ingestor.ingest_universe(self.tickers, self.config['data_engine']['start_date'], "now")
 
     def _collect_training_data(self, start: datetime, end: datetime) -> MultiModalBatch:
         logger.info(f"📥 Collecting Sniper training data ({start.date()} -> {end.date()})...")

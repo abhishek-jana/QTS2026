@@ -90,6 +90,7 @@ def main():
     rl_sub.add_parser("data", help="Pre-compute training data for RL")
     train_parser = rl_sub.add_parser("train")
     train_parser.add_argument("--steps", type=int, default=default_steps)
+    train_parser.add_argument("--resume", action="store_true", help="Resume from latest checkpoint")
     rl_sub.add_parser("eval", help="Unified portfolio evaluation")
 
     # --- 3. Full Pipeline ---
@@ -161,7 +162,7 @@ def main():
             precompute_rl_data()
         elif args.subcommand == "train":
             from scripts.train_rl_pilot import train_rl_pilot
-            train_rl_pilot(total_timesteps=args.steps)
+            train_rl_pilot(total_timesteps=args.steps, resume=args.resume)
         elif args.subcommand == "eval":
             from scripts.rl_evaluator import run_rl_evaluation
             run_rl_evaluation()

@@ -141,7 +141,7 @@ class SimulationEngineV5:
         
         cash = 100000.0; positions = {}; price_cache = {}; starting_capital = 100000.0; peak_value = 100000.0
         portfolio_returns = []; score_history = []; history = []
-        ic_buffer = []; realized_ic = 0.1914; wins = 0; total_fees = 0.0
+        ic_buffer = []; realized_ic = 0.0; wins = 0; total_fees = 0.0
         signal_queue = None; last_target_lev = None; last_concentration = 12
 
         for i in range(len(steps)):
@@ -207,9 +207,19 @@ class SimulationEngineV5:
             if should_rebalance:
                 last_target_lev = target_lev; last_concentration = concentration
                 target_notional = (nlv * target_lev); top_picks = sorted(exec_scores.keys(), key=lambda x: exec_scores.get(x, -9), reverse=True)[:concentration]
+                
+                # High-Density Allocation Logic: Read from config
+                temp = self.config.get('execution_muscle', {}).get('allocation_temperature', 0.5)
+                asset_cap = self.config.get('execution_muscle', {}).get('max_single_asset_cap', 0.15)
+                
                 top_scores = np.array([exec_scores.get(x, -9) for x in top_picks]) * 100.0
-                exp_scores = np.exp((top_scores - np.max(top_scores)) / 0.5)
+                exp_scores = np.exp((top_scores - np.max(top_scores)) / temp)
                 weights = exp_scores / (np.sum(exp_scores) + 1e-9)
+                
+                # Enforce asset cap for safety, then redistribute
+                if np.max(weights) > asset_cap:
+                    weights = np.clip(weights, 0, asset_cap)
+                    weights = weights / np.sum(weights)
                 
                 turnover_notional = 0.0
                 for t in list(positions.keys()):

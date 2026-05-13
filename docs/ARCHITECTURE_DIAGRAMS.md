@@ -61,9 +61,29 @@ graph TD
     H -- "Update History" --> I[(Redis: State Recovery)]
 ```
 
-## 5. UI Streaming Layer
+## 6. The "Tri-Brain" Decoupled Logic
+This diagram illustrates the operational separation of thinking (AI/RL) and execution (Bot). Each module is isolated to ensure system stability and prevent logic interference.
+
 ```mermaid
 graph TD
-    A[(Redis: Pub/Sub)] -- Targeted Ticker Data --> B[FastAPI: Streamer]
-    B -- Selective WebSockets --> C[Cockpit Frontend: React/LightweightCharts]
+    subgraph The Thinking Brain (The Cloud/Server)
+        A[Analyst: RankNet AI] -- "Signal: 60-Stock Ladder" --> C[Inference Translation]
+        B[Captain: RL Pilot] -- "Decision: 1.0x / Top 5 / Sniper" --> C
+    end
+
+    subgraph The Memory Layer (Persistence)
+        C -- "Write Weights % (No thinking)" --> D[(Redis: Sealed Envelope)]
+    end
+
+    subgraph The Execution Muscle (Local/Paper)
+        D -- "Read Weights % at 3:50 PM" --> E[Mechanic: PaperBot]
+        F[Live Price Feed] -- "Get Penny Price" --> E
+        E -- "Mechanical Order: (Weights * Budget) / Price" --> G[Broker: Alpaca/IBKR]
+    end
+
+    subgraph Operational Roles
+        RoleA[Analyst: Sees Alpha, ignores dollars]
+        RoleB[Captain: Sees profit/risk, ignores tickers]
+        RoleC[Mechanic: Sees orders/penny prices, ignores strategy]
+    end
 ```

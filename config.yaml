@@ -2,13 +2,15 @@ data_engine:
   features:
   - close
   - volume
-  provider: tiingo
+  provider: alpaca
   start_date: '2016-01-01'
   storage_path: data/uqts_v2_intraday.ddb
   timeframe: 15Min
 execution_muscle:
+  allocation_temperature: 0.1
   latency_stress_test: true
-  max_position_size: 0.1
+  max_position_size: 0.5
+  max_single_asset_cap: 0.5
   min_belief_threshold: 0.65
   mpc_solver:
     horizon: 5
@@ -21,7 +23,7 @@ execution_muscle:
     kill_switch_enabled: true
     max_notional_per_order: 50000.0
     max_total_leverage: 3.0
-  trading_mode: sim
+  trading_mode: paper
 model_pipeline:
   architecture:
     gnn_layers: 2
@@ -48,6 +50,9 @@ model_pipeline:
   training_dataset_path: data/train_dataset_v2_full.pt
 risk_metacontroller:
   prior_belief: 0.5
+rl_training_physics:
+  allocation_temperature: 0.5
+  max_single_asset_cap: 0.15
 signal_physics:
   fractional_differentiation:
     d_param: 0.0

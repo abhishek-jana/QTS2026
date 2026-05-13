@@ -123,7 +123,8 @@ class AsyncPaperBot:
         if price <= 0: return 0
         
         limits = self.config['execution_muscle']
-        max_pos_pct = limits.get('max_position_size', 0.05)
+        # Unification: Prefer asset cap over legacy position size
+        max_pos_pct = limits.get('max_single_asset_cap', limits.get('max_position_size', 0.15))
         max_notional = limits.get('safety_limits', {}).get('max_notional_per_order', 10000.0)
         
         # Target notional based on portfolio value

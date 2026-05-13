@@ -29,6 +29,8 @@ class NumpyEncoder(json.JSONEncoder):
             return obj.item()
         if isinstance(obj, np.ndarray):
             return obj.tolist()
+        if isinstance(obj, datetime):
+            return obj.isoformat()
         return super(NumpyEncoder, self).default(obj)
 
 class InferenceWorker:
@@ -112,6 +114,7 @@ class InferenceWorker:
         self.is_initialized = False; self.spy_start_p = None; self.sim_signal_queue = None
         self.ic_buffer = [] # To store (date, scores_dict, prices_at_T) for Realized IC
         self.alpha_history = [] # Ferrari O(1) buffer for alpha velocity
+        self.realized_ic = 0.0 # Start from clean slate
         
         self.live_bot = None
         if self.trading_mode in ['paper', 'live']:
@@ -146,6 +149,12 @@ class InferenceWorker:
                 saved_spy_p = self.redis_client.get('uqts:live:spy_start_p')
                 if saved_spy_p: self.spy_start_p = float(saved_spy_p)
                 
+                saved_belief = self.redis_client.get('uqts:live:bayesian_belief')
+                if saved_belief: self.strategy.meta_controller.belief = float(saved_belief)
+                
+                saved_ic_buffer = self.redis_client.get('uqts:live:ic_buffer')
+                if saved_ic_buffer: self.ic_buffer = json.loads(saved_ic_buffer)
+
                 logger.info(f"🏎️ STATE RECOVERED: {len(self.performance_history)} days of history found.")
             except Exception as e:
                 logger.warning(f"State recovery failed: {e}")
@@ -194,7 +203,6 @@ class InferenceWorker:
 
     def _is_market_open(self, dt):
         """Check if US Market is currently open (9:30 - 16:00 EST)."""
-        # Note: Very basic version, doesn't handle holidays.
         if dt.weekday() >= 5: return False
         m_start = dt.replace(hour=9, minute=30, second=0, microsecond=0)
         m_end = dt.replace(hour=16, minute=0, second=0, microsecond=0)
@@ -286,9 +294,7 @@ class InferenceWorker:
         }
 
         # 4. Final Telemetry Build
-        # Ferrari Fix: Unify Fused Conviction across Sim/Live
-        bayesian_belief = house_view.get('belief_score', 0.5)
-        # Use the leverage from the decision we JUST MADE for today's plan
+        bayesian_belief = self.strategy.meta_controller.get_position_scaler()
         fused_conviction = bayesian_belief * target_lev_signal
         
         # --- LAGGED VS INSTANT EXECUTION ---
@@ -299,21 +305,21 @@ class InferenceWorker:
             # Print planning log for NEXT day
             if should_reb_signal:
                 current_tickers = {t: q for t, q in self.sim_positions.items() if q > 0 and t != "SPY"}
-                
-                adds = []
+                adds, sells = [], []
                 for item in picks_with_qty:
                     t, q = item['ticker'], item['qty']
                     curr_q = current_tickers.get(t, 0)
                     if q > curr_q: adds.append(f"{t}(+{q-curr_q})")
                 
-                sells = []
                 planned_tickers = [x['ticker'] for x in picks_with_qty]
                 for t, q in current_tickers.items():
-                    if t not in planned_tickers:
-                        sells.append(f"{t}(-{q})")
+                    if t not in planned_tickers: sells.append(f"{t}(-{q})")
                     else:
                         target_q = next(x['qty'] for x in picks_with_qty if x['ticker'] == t)
                         if target_q < q: sells.append(f"{t}(-{q-target_q})")
+
+                current_decision['adds_display'] = adds
+                current_decision['sells_display'] = sells
 
                 picks_display = [f"{x['ticker']}({x['qty']})" for x in picks_with_qty]
                 log_msg = f"🔮 [PLANNING] AI Decision Queued for Next Day: Lev {target_lev_signal}x\n"
@@ -321,23 +327,15 @@ class InferenceWorker:
                 if adds: log_msg += f"   >> ADDS : {adds}\n"
                 if sells: log_msg += f"   >> SELLS: {sells}"
                 logger.info(log_msg)
-                
-                current_decision['adds_display'] = adds
-                current_decision['sells_display'] = sells
 
-            self.sim_signal_queue = current_decision # Store today's for tomorrow
+            self.sim_signal_queue = current_decision
             if decision_to_execute is None:
-                # First day: stay in cash/hold current
                 self.last_target_lev = 0.0; self.last_concentration = 5
                 return self._build_stats_bundle(nlv, fused_conviction, pos_mv, 0.0)
         else:
-            # Instant: Execute TODAY'S decision immediately
             decision_to_execute = current_decision
 
         # 3. Execute decision
-        # ... (rest of execution logic) ...
-        # (Updating the execution logic to ensure return uses fused_conviction)
-        
         should_reb = decision_to_execute['should_reb']
         target_lev = decision_to_execute['target_lev']
         concentration = decision_to_execute['concentration']
@@ -377,7 +375,6 @@ class InferenceWorker:
                             self.order_log.append({"time": self.current_knowledge_time.strftime("%m/%d %H:%M"), "ticker": t, "side": "BUY" if t_qty > c_qty else "SELL", "qty": int(abs(t_qty-c_qty)), "notional": float(abs(diff_v)), "status": "FILLED"})
                             self.oms_queue['filled'] += 1
             
-            # Implementation Shortfall: friction (0.0005) + random slippage
             shortfall_val = turnover_notional * (0.0005 + np.random.uniform(0, 0.0002))
             self.sim_cash -= shortfall_val
             self.cumulative_fees += shortfall_val
@@ -387,83 +384,53 @@ class InferenceWorker:
         return self._build_stats_bundle(nlv, fused_conviction, pos_mv, total_shortfall)
 
     def _build_stats_bundle(self, nlv, conviction_belief, pos_mv, total_shortfall):
-        # 1. DYNAMIC WIN RATE & SHARPE
         returns = [h['portfolio'] for h in self.performance_history]
         spy_vals = [h['spy'] for h in self.performance_history]
-        
-        win_rate = 0.0; sharpe = 0.0
+        win_rate, sharpe = 0.0, 0.0
         if len(returns) > 5:
-            # Win Rate: Batting average against SPY (Daily)
             wins = 0
             for i in range(1, len(returns)):
-                agent_ret = (returns[i] / (returns[i-1] + 1e-6)) - 1
-                spy_ret = (spy_vals[i] / (spy_vals[i-1] + 1e-6)) - 1
-                if agent_ret > spy_ret: wins += 1
+                if (returns[i]/returns[i-1]) > (spy_vals[i]/spy_vals[i-1]): wins += 1
             win_rate = (wins / (len(returns)-1)) * 100.0
-            
-            # Sharpe: Risk-adjusted annualized return
             daily_rets = np.diff(returns) / (np.array(returns[:-1]) + 1e-9)
             sharpe = (np.mean(daily_rets) / (np.std(daily_rets) + 1e-9)) * np.sqrt(252)
 
-        # 2. REALIZED IC (Spearman Rank Correlation)
-        # Store current state for future evaluation
-        current_scores = {t: 0.0 for t in self.tickers}
-        # house_view is not directly available here, so we'll pass it or pull from memory
-        # For simplicity, we'll calculate realized_ic in the main loop instead.
-        
         sector_stats, _ = self._get_sector_exposure(self.sim_positions, self.sim_price_memory, nlv)
         active_pos_count = len([q for q in self.sim_positions.values() if q != 0])
-        
         roe = (nlv / 100000.0 - 1.0) * 100.0
         return {
             "nlv": nlv, "conviction": conviction_belief, "leverage": getattr(self, 'last_target_lev', 0.0), "hedge": 0.0, "concentration": getattr(self, 'last_concentration', 5),
             "active_pos": active_pos_count, "sector_exposure": sector_stats, "gross_exposure": (pos_mv/nlv*100) if nlv > 0 else 0,
             "buying_power": self.sim_cash, "roe": roe, "shortfall": total_shortfall,
-            "sensors": {"win_rate": win_rate, "max_dd": (nlv-self.peak_value)/(self.peak_value+1e-6)*100, "ic": getattr(self, 'realized_ic', 0.1914), "sharpe": sharpe},
-            "pending_decision": self.sim_signal_queue # Surface sim lag to UI
+            "sensors": {"win_rate": win_rate, "max_dd": (nlv-self.peak_value)/(self.peak_value+1e-6)*100, "ic": self.realized_ic, "sharpe": sharpe},
+            "pending_decision": self.sim_signal_queue
         }
 
     async def _update_oms_live(self, house_view):
         now = datetime.now()
-        is_thinking_window = (now.hour == 16 and 5 <= now.minute <= 30) # 4:05 PM - 4:30 PM
-        is_execution_window = (now.hour == 15 and now.minute >= 50)   # 3:50 PM - 4:00 PM (MOC Window)
+        is_thinking_window = (now.hour == 16 and 5 <= now.minute <= 30)
+        is_execution_window = (now.hour == 15 and now.minute >= 50)
 
-        # 1. RECOVERY & TELEMETRY
         pending_json = self.redis_client.get('uqts:live:pending_decision')
         pending_decision = json.loads(pending_json) if pending_json else None
         
-        # 2. Ferrari Self-Healing: Retroactive Planning
-        # If we are offline during the 4:05 PM window, we catch up when we boot.
-        # Condition: It's after market close, we have no pending decision, and it's not currently the planning window.
         today_str = now.strftime("%Y-%m-%d")
         last_plan_date = self.redis_client.get('uqts:live:last_plan_date')
         
-        should_catch_up = (
-            (now.hour >= 16 or now.hour < 15) and # We are between yesterday's close and today's execution window
-            pending_decision is None and           # We have no plan stored
-            last_plan_date != today_str and        # We haven't planned yet today
-            not is_thinking_window and             # We aren't in the official window right now
-            house_view.get('status') == "OK"       # We have model data to act on
-        )
-
+        should_catch_up = ((now.hour >= 16 or now.hour < 15) and pending_decision is None and last_plan_date != today_str and not is_thinking_window and house_view.get('status') == "OK")
         if should_catch_up:
-            logger.warning("🏎️ RETROACTIVE PLANNING: Catch-up initiated (No trade plan found for the current session).")
-            # We trigger the thinking logic below by forcing the flag
+            logger.warning("🏎️ RETROACTIVE PLANNING: Catch-up initiated.")
             is_thinking_window = True 
 
-        # Hydrate State
         nlv, _ = await self.live_bot.hydrate_state()
         self.peak_value = max(self.peak_value, nlv)
         prices = self._get_batch_prices(self.tickers, now)
         long_mv = sum(qty * prices.get(t, 0) for t, qty in self.live_bot.positions.items())
         roe = (nlv / 100000.0 - 1.0) * 100.0
 
-        # --- PHASE A: THE THINKING WINDOW (PLANNING) ---
         if is_thinking_window:
-            # Prevent redundant planning in the same window
             last_plan_date = self.redis_client.get('uqts:live:last_plan_date')
             today_str = now.strftime("%Y-%m-%d")
-            
             if last_plan_date != today_str:
                 obs, _ = self._get_rl_observation(house_view['ladder'], nlv, nlv - long_mv, now, 100000.0, self.peak_value, [], 0.0, 0.0, [])
                 if self.rl_pilot:
@@ -473,10 +440,8 @@ class InferenceWorker:
                 else:
                     target_lev = 1.0; concentration = 12
 
-                # ESTIMATE QUANTITIES FOR PLANNING
                 target_notional = nlv * target_lev
                 target_weights = self._calculate_target_weights(house_view['ladder'], concentration)
-                
                 picks_with_qty = []
                 for t, w in target_weights.items():
                     p = prices.get(t, 0)
@@ -484,110 +449,67 @@ class InferenceWorker:
                     picks_with_qty.append({"ticker": t, "qty": qty, "score": next(x['score'] for x in house_view['ladder'] if x['ticker'] == t)})
 
                 current_tickers = {t: q for t, q in self.live_bot.positions.items() if q > 0 and t != "SPY"}
-                adds = []
+                adds, sells = [], []
                 for item in picks_with_qty:
                     t, q = item['ticker'], item['qty']
                     curr_q = current_tickers.get(t, 0)
                     if q > curr_q: adds.append(f"{t}(+{q-curr_q})")
                 
-                sells = []
                 planned_tickers = [x['ticker'] for x in picks_with_qty]
                 for t, q in current_tickers.items():
-                    if t not in planned_tickers:
-                        sells.append(f"{t}(-{q})")
+                    if t not in planned_tickers: sells.append(f"{t}(-{q})")
                     else:
                         target_q = next(x['qty'] for x in picks_with_qty if x['ticker'] == t)
                         if target_q < q: sells.append(f"{t}(-{q-target_q})")
 
-                # Store the frozen decision for tomorrow
-                decision = {
-                    "date": today_str,
-                    "target_lev": target_lev,
-                    "concentration": concentration,
-                    "ladder": picks_with_qty,
-                    "adds_display": adds,
-                    "sells_display": sells,
-                    "status": "QUEUED"
-                }
+                decision = {"date": today_str, "target_lev": target_lev, "concentration": concentration, "ladder": picks_with_qty, "adds_display": adds, "sells_display": sells, "status": "QUEUED"}
                 self.redis_client.set('uqts:live:pending_decision', json.dumps(decision, cls=NumpyEncoder))
                 self.redis_client.set('uqts:live:last_plan_date', today_str)
-                
-                picks_display = [f"{x['ticker']}({x['qty']})" for x in picks_with_qty]
-                log_msg = f"🔮 [PLANNING] AI Decision Queued for tomorrow: Lev {target_lev}x\n"
-                log_msg += f"   >> PICKS: {picks_display}\n"
-                if adds: log_msg += f"   >> ADDS : {adds}\n"
-                if sells: log_msg += f"   >> SELLS: {sells}"
-                logger.success(log_msg)
+                logger.success(f"🔮 [PLANNING] AI Decision Queued for tomorrow: Lev {target_lev}x")
 
-        # --- PHASE B: THE EXECUTION WINDOW (MOC) ---
         if is_execution_window and pending_decision:
-            today_str = now.strftime("%Y-%m-%d")
-            # Ensure we aren't executing a decision made TODAY (Wait for 24h lag)
             if pending_decision['date'] != today_str:
-                logger.info(f"🚀 [EXECUTION] Routing MOC orders for buffered decision from {pending_decision['date']}...")
-                
+                logger.info(f"🚀 [EXECUTION] Routing MOC orders...")
                 target_lev = pending_decision['target_lev']
                 concentration = pending_decision['concentration']
                 target_weights = self._calculate_target_weights(pending_decision['ladder'], concentration)
-                top_picks = list(target_weights.keys())
                 total_target_capital = nlv * target_lev
-                
                 turnover_notional = 0.0
-                # Route Sells
-                for ticker, qty in list(self.live_bot.positions.items()):
-                    if ticker not in top_picks and ticker != "SPY" and qty > 0:
-                        turnover_notional += qty * prices.get(ticker, 0)
-                        self.live_bot.submit_order(ticker, "SELL", int(qty))
-                
-                # Route Buys
-                for ticker, w in target_weights.items():
-                    curr_price = prices.get(ticker, 0)
-                    if curr_price <= 0: continue
-                    target_qty = int((total_target_capital * w) / curr_price)
-                    current_qty = self.live_bot.positions.get(ticker, 0)
+                for t, q in list(self.live_bot.positions.items()):
+                    if t not in target_weights and t != "SPY" and q > 0:
+                        turnover_notional += q * prices.get(t, 0)
+                        self.live_bot.submit_order(t, "SELL", int(q))
+                for t, w in target_weights.items():
+                    p = prices.get(t, 0)
+                    if p <= 0: continue
+                    target_qty = int((total_target_capital * w) / p)
+                    current_qty = self.live_bot.positions.get(t, 0)
                     diff = target_qty - current_qty
-                    if abs(diff) >= 1 and (current_qty == 0 or abs(diff) / (current_qty + 1e-6) > 0.15):
-                        turnover_notional += abs(diff) * curr_price
-                        self.live_bot.submit_order(ticker, "BUY" if diff > 0 else "SELL", int(abs(diff)))
-                
-                shortfall_val = turnover_notional * (0.0005 + np.random.uniform(0, 0.0002))
-                self.cumulative_fees += shortfall_val
-                self.last_shortfall_live = (shortfall_val / (nlv + 1e-6)) * 10000.0
-                
-                # Success: Clear the queue
+                    if abs(diff) >= 1:
+                        turnover_notional += abs(diff) * p
+                        self.live_bot.submit_order(t, "BUY" if diff > 0 else "SELL", int(abs(diff)))
+                self.cumulative_fees += turnover_notional * 0.0005
                 self.redis_client.delete('uqts:live:pending_decision')
-                logger.success(f"✅ [EXECUTION] MOC Orders Dispatched.")
 
-        # --- PHASE C: CONTINUOUS TELEMETRY ---
-        # Ferrari Fix: Fused Conviction Logic
-        bayesian_belief = house_view.get('belief_score', 0.5)
-        
-        # If RL Pilot is active, use its decision as an additional confidence layer
+        bayesian_belief = self.strategy.meta_controller.get_position_scaler()
         rl_leverage = 0.0
         if house_view.get('status') == "OK":
             obs, _ = self._get_rl_observation(house_view['ladder'], nlv, nlv - long_mv, now, 100000.0, self.peak_value, [], 0.0, 0.0, [])
             if self.rl_pilot:
                 act, _ = self.rl_pilot.predict(obs, deterministic=True)
                 rl_leverage = float(act[0])
-            else:
-                rl_leverage = 1.0 # Default if no pilot
+            else: rl_leverage = 1.0
         
-        # Conviction = Bayesian Model Integrity * RL Expected Action
-        # This makes it move much more significantly (0-100%)
         fused_conviction = bayesian_belief * rl_leverage
-        
         sector_stats, _ = self._get_sector_exposure(self.live_bot.positions, prices, nlv)
         active_pos_count = len([q for q in self.live_bot.positions.values() if q != 0])
         
         return {
-            "nlv": nlv, "conviction": fused_conviction, 
-            "leverage": pending_decision['target_lev'] if pending_decision else 0.0, 
-            "hedge": 0.0, 
-            "concentration": pending_decision['concentration'] if pending_decision else 5,
+            "nlv": nlv, "conviction": fused_conviction, "leverage": pending_decision['target_lev'] if pending_decision else 0.0, "hedge": 0.0, "concentration": pending_decision['concentration'] if pending_decision else 5,
             "active_pos": active_pos_count, "sector_exposure": sector_stats, "gross_exposure": (long_mv/nlv*100) if nlv > 0 else 0,
             "buying_power": nlv-long_mv, "roe": roe, "shortfall": getattr(self, 'last_shortfall_live', 0.0), "cumulative_fees": self.cumulative_fees,
-            "sensors": {"win_rate": 0, "max_dd": (nlv-self.peak_value)/(self.peak_value+1e-6)*100, "ic": getattr(self, 'realized_ic', 0.1914), "sharpe": 2.45},
-            "pending_decision": pending_decision # Surface to payload
+            "sensors": {"win_rate": getattr(self, 'live_win_rate', 0.0), "max_dd": (nlv-self.peak_value)/(self.peak_value+1e-6)*100, "ic": self.realized_ic, "sharpe": getattr(self, 'live_sharpe', 0.0)},
+            "pending_decision": pending_decision
         }
 
     def _get_sector_exposure(self, positions, prices, nlv):
@@ -600,12 +522,46 @@ class InferenceWorker:
 
     def _calculate_target_weights(self, valid_ladder, concentration):
         top_entries = valid_ladder[:concentration]
+        # Professional High-Density Allocation: Temperature control via config
+        temp = self.config.get('execution_muscle', {}).get('allocation_temperature', 0.5)
+        asset_cap = self.config.get('execution_muscle', {}).get('max_single_asset_cap', 0.15)
+        
         top_scores = np.array([e['score'] for e in top_entries]) * 100.0
-        exp_scores = np.exp((top_scores - np.max(top_scores)) / 0.5)
+        exp_scores = np.exp((top_scores - np.max(top_scores)) / temp)
         weights = exp_scores / (np.sum(exp_scores) + 1e-9)
+        
+        # Enforce safety cap and redistribute if needed (Institutional Safety)
+        if np.max(weights) > asset_cap:
+            weights = np.clip(weights, 0, asset_cap)
+            weights = weights / np.sum(weights)
+            
         return {top_entries[i]['ticker']: float(weights[i]) for i in range(len(top_entries))}
 
     def _get_batch_prices(self, tickers, as_of):
+        if self.trading_mode != 'sim' and self.live_bot:
+            try:
+                headers = {"APCA-API-KEY-ID": self.live_bot.api_key, "APCA-API-SECRET-KEY": self.live_bot.api_secret}
+                url = f"https://data.alpaca.markets/v2/stocks/trades/latest?symbols={','.join(tickers)}"
+                resp = requests.get(url, headers=headers)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    prices = {t: float(d['p']) for t, d in data.get('trades', {}).items()}
+                    if prices: return prices
+            except Exception as e:
+                logger.warning(f"Live Price Fetch Failed ({e}), falling back to local DB.")
+    def _get_batch_prices(self, tickers, as_of):
+        if self.trading_mode != 'sim' and self.live_bot:
+            try:
+                headers = {"APCA-API-KEY-ID": self.live_bot.api_key, "APCA-API-SECRET-KEY": self.live_bot.api_secret}
+                url = f"https://data.alpaca.markets/v2/stocks/trades/latest?symbols={','.join(tickers)}"
+                resp = requests.get(url, headers=headers)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    prices = {t: float(d['p']) for t, d in data.get('trades', {}).items()}
+                    if prices: return prices
+            except Exception as e:
+                logger.warning(f"Live Price Fetch Failed ({e}), falling back to local DB.")
+
         t_tuple = tuple(tickers)
         t_str = f"('{t_tuple[0]}')" if len(t_tuple) == 1 else str(t_tuple)
         query = f"SELECT ticker, close FROM market_data WHERE ticker IN {t_str} AND event_time <= '{as_of.strftime('%Y-%m-%d %H:%M:%S')}' QUALIFY ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY event_time DESC) = 1"
@@ -616,23 +572,16 @@ class InferenceWorker:
 
     async def run(self):
         logger.info(f"INFERENCE WORKER: MASTER SNIPER STARTING ({self.trading_mode})")
-        
-        if self.live_bot:
-            asyncio.create_task(self.live_bot.run_stream())
-            logger.info("INFERENCE WORKER: Live Stream Task Started.")
-
+        if self.live_bot: asyncio.create_task(self.live_bot.run_stream())
         tick = 0
         while not self.is_killed:
             tick += 1
-            if not self.is_initialized:
-                await asyncio.sleep(1); continue
-
+            if not self.is_initialized: await asyncio.sleep(1); continue
             if self.trading_mode != 'sim': 
                 self.current_knowledge_time = datetime.now()
                 house_view = self.strategy.get_current_rankings(as_of=self.current_knowledge_time, include_batch=True)
             else:
-                if self.current_knowledge_time.weekday() >= 5:
-                    self.current_knowledge_time += timedelta(days=1); continue
+                if self.current_knowledge_time.weekday() >= 5: self.current_knowledge_time += timedelta(days=1); continue
                 dt_key = self.current_knowledge_time.strftime("%Y-%m-%d")
                 house_view = self.sim_rankings_cache.get(dt_key, {"status": "DATA_MISSING", "ladder": []})
 
@@ -640,109 +589,68 @@ class InferenceWorker:
                 if self.trading_mode == 'sim': stats = self._update_oms_sim(house_view)
                 else: stats = await self._update_oms_live(house_view)
             else:
-                # Ferrari Robustness: Still calculate basic stats for UI even if AI rankings are missing
-                if self.trading_mode != 'sim':
-                    stats = await self._update_oms_live(house_view) # Will just check window/telemetry
-                else:
-                    stats = None
-                
+                if self.trading_mode != 'sim': stats = await self._update_oms_live(house_view)
+                else: stats = None
+
             if stats:
-                # Robust Price & Score Lookup
                 prices = self.sim_price_memory if self.trading_mode == 'sim' else self._get_batch_prices(self.tickers, self.current_knowledge_time)
                 scores_dict = {e['ticker']: e['score'] for e in house_view.get('ladder', [])}
-                
-                # DYNAMIC REALIZED IC (Spearman)
-                if self.trading_mode == 'sim':
-                    # Store current scores/prices for IC checking in 3 days
-                    self.ic_buffer.append({"date": self.current_knowledge_time, "scores": scores_dict, "prices": prices.copy()})
-                    if len(self.ic_buffer) > 3:
-                        past_data = self.ic_buffer.pop(0)
-                        realized_rets = []
-                        predicted_scores = []
-                        for t in self.tickers:
-                            if t in prices and t in past_data['prices']:
-                                ret = (prices[t] / (past_data['prices'][t] + 1e-9)) - 1
-                                realized_rets.append(ret)
-                                predicted_scores.append(past_data['scores'].get(t, 0.0))
-                        if len(realized_rets) > 10:
-                            ic_val, _ = spearmanr(predicted_scores, realized_rets)
-                            self.realized_ic = max(0, ic_val) # Clamp to positive for signal health
+                self.ic_buffer.append({"date": self.current_knowledge_time, "scores": scores_dict, "prices": prices.copy()})
+                if len(self.ic_buffer) > 3:
+                    past_data = self.ic_buffer.pop(0)
+                    realized_rets, pred_scores = [], []
+                    for t in self.tickers:
+                        if t in prices and t in past_data['prices']:
+                            realized_rets.append((prices[t]/(past_data['prices'][t]+1e-9))-1)
+                            pred_scores.append(past_data['scores'].get(t, 0.0))
+                    if len(realized_rets) > 10:
+                        self.strategy.meta_controller.update_belief(np.array(realized_rets), np.array(pred_scores))
+                        ic_val, _ = spearmanr(pred_scores, realized_rets)
+                        self.realized_ic = max(0, ic_val)
 
                 ladder_ui = []
                 for t in self.tickers:
                     p = prices.get(t, 0.0); score = scores_dict.get(t, 0.0)
                     qty = self.sim_positions.get(t, 0.0) if self.trading_mode == 'sim' else self.live_bot.positions.get(t, 0.0)
                     entry_p = self.sim_avg_costs.get(t, p) if self.trading_mode == 'sim' else p
-                    mv = qty * p; pnl = ((p/max(entry_p, 1e-6))-1)*100 if entry_p > 0 else 0.0
+                    mv, pnl = qty * p, ((p/max(entry_p, 1e-6))-1)*100 if entry_p > 0 else 0.0
                     ladder_ui.append({"ticker": t, "score": float(score), "live_price": float(p), "qty": int(qty), "market_value": float(mv), "pnl_pct": float(pnl), "sector": self.sector_map.get(t, "Other")})
-                
+
                 focused = self.redis_client.get('uqts:focused_ticker')
                 if focused:
                     diag = self.strategy.get_ticker_diagnostics(focused, as_of=self.current_knowledge_time)
                     if diag:
-                        pld = { 
-                            "type": "SPECTRAL_UPDATE", 
-                            "spectral": { 
-                                "ticker": focused, 
-                                "history": diag['history'], 
-                                "cwt": diag['cwt'], # NumpyEncoder will handle list conversion
-                                "adf_p_value": diag['adf_p'], 
-                                "shap_values": diag['shap_fusion'] 
-                            } 
-                        }
+                        pld = {"type": "SPECTRAL_UPDATE", "spectral": {"ticker": focused, "history": diag['history'], "cwt": diag['cwt'], "adf_p_value": diag['adf_p'], "shap_values": diag['shap_fusion']}}
                         self.redis_client.publish(f'uqts:spectral:{focused}', json.dumps(pld, cls=NumpyEncoder))
-                    else:
-                        logger.warning(f"📉 SPECTRAL DRIFT: No data for {focused} as of {self.current_knowledge_time}")
 
                 spy_p = prices.get('SPY', self.spy_start_p or 1.0)
                 spy_cap = (spy_p / self.spy_start_p) * 100000.0 if self.spy_start_p else 100000.0
                 gain_pct = (stats['nlv'] / 100000.0 - 1) * 100.0
-                
-                logger.debug(f"[{self.current_knowledge_time.strftime('%Y-%m-%d')}] AGENT: ${stats['nlv']:,.2f} ({gain_pct:+.2f}%) | SPY: ${spy_cap:,.2f} | Fees: ${self.cumulative_fees:,.2f} | Pos: {stats['active_pos']}")
-
                 timestamp_str = self.current_knowledge_time.strftime("%Y-%m-%d")
                 self.performance_history.append({"time": timestamp_str, "portfolio": float(stats['nlv']), "spy": float(spy_cap)})
-                
-                # Ferrari O(1) update
-                new_alpha = ((float(stats['nlv'])/100000.0)-(float(spy_cap)/100000.0))*100.0
-                self.alpha_history.append({"time": timestamp_str, "alpha": new_alpha})
+                self.alpha_history.append({"time": timestamp_str, "alpha": ((float(stats['nlv'])/100000.0)-(float(spy_cap)/100000.0))*100.0})
 
-                # Ferrari State Persistence (Sync to Redis)
                 if self.trading_mode != 'sim' and tick % 10 == 0:
-                    try:
-                        self.redis_client.set('uqts:live:performance_history', json.dumps(self.performance_history))
-                        self.redis_client.set('uqts:live:alpha_history', json.dumps(self.alpha_history))
-                        self.redis_client.set('uqts:live:cumulative_fees', self.cumulative_fees)
-                    except: pass
+                    self.redis_client.set('uqts:live:performance_history', json.dumps(self.performance_history))
+                    self.redis_client.set('uqts:live:alpha_history', json.dumps(self.alpha_history))
+                    self.redis_client.set('uqts:live:cumulative_fees', self.cumulative_fees)
+                    self.redis_client.set('uqts:live:bayesian_belief', self.strategy.meta_controller.belief)
+                    self.redis_client.set('uqts:live:ic_buffer', json.dumps(self.ic_buffer, cls=NumpyEncoder))
 
                 payload = {
                     "timestamp": self.current_knowledge_time.strftime("%Y-%m-%d %H:%M:%S"),
                     "market_status": "OPEN" if self._is_market_open(self.current_knowledge_time) else "CLOSED",
                     "metacognition": {"policy_conviction": float(stats['conviction']), "rl_leverage": float(stats['leverage']), "rl_hedge": 0.0, "concentration": int(stats['concentration']), "strategy_sensors": stats['sensors'], "alpha_gain": self.alpha_history},
-                    "institutional": {
-                        "capital": float(stats['nlv']), "active_positions": int(stats['active_pos']), "gross_exposure": float(stats['gross_exposure']), "buying_power": float(stats['buying_power']),
-                        "roe": float(stats['roe']), "sector_exposure": stats['sector_exposure'], "oms_queue": self.live_bot.oms_stats if self.live_bot else self.oms_queue, 
-                        "order_log": self.live_bot.order_log[-10:] if self.live_bot else self.order_log[-10:],
-                        "trading_mode": self.trading_mode, "performance_history": self.performance_history,
-                        "pending_decision": stats.get('pending_decision')
-                    },
-                    "execution": {
-                        "implementation_shortfall": float(stats['shortfall']), 
-                        "cumulative_fees": float(self.cumulative_fees), 
-                        "is_var": 0.0001, 
-                        "slippage_heatmap": [[float(min(1.0, stats['shortfall']*0.1 + np.random.random()*0.1)) for _ in range(5)] for _ in range(5)]
-                    },
+                    "institutional": {"capital": float(stats['nlv']), "active_positions": int(stats['active_pos']), "gross_exposure": float(stats['gross_exposure']), "buying_power": float(stats['buying_power']), "roe": float(stats['roe']), "sector_exposure": stats['sector_exposure'], "oms_queue": self.live_bot.oms_stats if self.live_bot else self.oms_queue, "order_log": self.live_bot.order_log[-10:] if self.live_bot else self.order_log[-10:], "trading_mode": self.trading_mode, "performance_history": self.performance_history, "pending_decision": stats.get('pending_decision')},
+                    "execution": {"implementation_shortfall": float(stats['shortfall']), "cumulative_fees": float(self.cumulative_fees), "is_var": 0.0001, "slippage_heatmap": [[float(min(1.0, stats['shortfall']*0.1 + np.random.random()*0.1)) for _ in range(5)] for _ in range(5)]},
                     "pipeline": {"champion_sharpe": 1.15, "challenger_sharpe": float(stats['sensors']['sharpe'])},
                     "rankings": {"ladder": ladder_ui}, "type": "GLOBAL_UPDATE"
                 }
                 self.redis_client.publish('uqts:global', json.dumps(payload, cls=NumpyEncoder))
-            
+
             if self.trading_mode == 'sim': 
                 self.current_knowledge_time += timedelta(days=1)
-                if self.current_knowledge_time > datetime.now():
-                    logger.success("🏁 SIMULATION COMPLETE. Final horizon reached.")
-                    self.is_killed = True
-            
+                if self.current_knowledge_time > datetime.now(): self.is_killed = True
             await asyncio.sleep(self.update_interval)
 
 if __name__ == "__main__":
