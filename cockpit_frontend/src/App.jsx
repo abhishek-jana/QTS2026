@@ -7,7 +7,7 @@ import {
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
 import { arrayMove, SortableContext, sortableKeyboardCoordinates, verticalListSortingStrategy, useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, ScatterChart, Scatter, AreaChart, Area } from 'recharts';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, ScatterChart, Scatter, AreaChart, Area, ReferenceLine } from 'recharts';
 
 class ErrorBoundary extends React.Component {
   constructor(props) { super(props); this.state = { hasError: false }; }
@@ -183,13 +183,14 @@ const PriceChart = ({ data, ticker }) => {
 const BenchmarkChart = ({ history }) => {
   if (!history || history.length < 2) return <div className="h-full w-full flex items-center justify-center text-slate-500 text-[10px] uppercase tracking-widest italic font-black">Awaiting Benchmarking...</div>;
   
-  const initialPort = history[0].portfolio;
-  const initialSpy = history[0].spy;
+  const initialPort = history[0].portfolio || 1;
+  const initialSpy = history[0].spy || 1;
   
+  // Normalize both to 100k starting value for a fair "100k baseline" comparison
   const chartData = history.map(d => ({
     time: d.time,
-    portfolio: d.portfolio,
-    spy: d.spy,
+    portfolio: (d.portfolio / initialPort) * 100000,
+    spy: (d.spy / initialSpy) * 100000,
     portPct: ((d.portfolio / initialPort) - 1) * 100,
     spyPct: ((d.spy / initialSpy) - 1) * 100
   }));
@@ -205,14 +206,14 @@ const BenchmarkChart = ({ history }) => {
             <div className="flex gap-4">
                 <div className="flex flex-col">
                   <span className="text-[8px] text-slate-400 uppercase font-black tracking-widest font-bold">Agent</span>
-                  <span className={`text-xs font-black tabular-nums ${latestPort >= initialPort ? 'text-emerald-400' : 'text-rose-500'}`}>
-                    ${(latestPort/1000).toFixed(0)}k ({latestPortPct >= 0 ? '+' : ''}{latestPortPct.toFixed(2)}%)
+                  <span className={`text-xs font-black tabular-nums ${latestPort >= 100000 ? 'text-emerald-400' : 'text-rose-500'}`}>
+                    ${(latestPort/1000).toFixed(1)}k ({latestPortPct >= 0 ? '+' : ''}{latestPortPct.toFixed(2)}%)
                   </span>
                 </div>
                 <div className="flex flex-col">
                   <span className="text-[8px] text-slate-400 uppercase font-black tracking-widest font-bold">S&P 500</span>
-                  <span className={`text-xs font-black tabular-nums ${latestSpy >= initialSpy ? 'text-emerald-400' : 'text-rose-500'}`}>
-                    ${(latestSpy/1000).toFixed(0)}k ({latestSpyPct >= 0 ? '+' : ''}{latestSpyPct.toFixed(2)}%)
+                  <span className={`text-xs font-black tabular-nums ${latestSpy >= 100000 ? 'text-emerald-400' : 'text-rose-500'}`}>
+                    ${(latestSpy/1000).toFixed(1)}k ({latestSpyPct >= 0 ? '+' : ''}{latestSpyPct.toFixed(2)}%)
                   </span>
                 </div>
             </div>
@@ -245,10 +246,11 @@ const BenchmarkChart = ({ history }) => {
                     />
                     <Tooltip 
                         contentStyle={{backgroundColor: '#000', border: '1px solid #1e293b', fontSize: '10px'}} 
-                        formatter={(val) => [`$${val.toLocaleString()}`, 'Value']}
+                        formatter={(val) => [`$${val.toLocaleString(undefined, {maximumFractionDigits:0})}`, 'Value']}
                     />
                     <Area type="monotone" dataKey="portfolio" stroke="#10b981" strokeWidth={3} fillOpacity={1} fill="url(#colorPort)" dot={false} />
                     <Area type="monotone" dataKey="spy" stroke="#64748b" strokeWidth={2} strokeDasharray="5 5" fill="transparent" dot={false} />
+                    <ReferenceLine y={100000} stroke="#475569" strokeWidth={1} strokeDasharray="3 3" label={{ position: 'right', value: '100k', fill: '#475569', fontSize: 8, fontWeight: 'bold' }} />
                 </AreaChart>
             </ResponsiveContainer>
         </div>
@@ -292,7 +294,17 @@ const SortableRow = ({ row, onSelectTicker }) => {
       <td onClick={() => onSelectTicker(row.ticker)} className="text-right py-1.5 text-slate-300 pr-4 font-bold font-mono text-xs tracking-tighter">${(row.live_price || 0).toFixed(2)}</td>
       <td onClick={() => onSelectTicker(row.ticker)} className={"text-right py-1.5 pr-4 font-bold font-mono text-xs tracking-tighter " + (row.score > 0 ? "text-emerald-500" : "text-rose-500")}>{(row.score || 0).toFixed(4)}</td>
       <td onClick={() => onSelectTicker(row.ticker)} className="text-right py-1 pr-4">
-        {Math.abs(row.market_value) > 0 ? (<div className="flex flex-col text-right leading-tight font-mono"><span className="font-black text-slate-100 text-xs">${row.market_value.toLocaleString(undefined, {maximumFractionDigits:0})}</span><span className={`text-[9px] font-black ${row.pnl_pct >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>({row.pnl_pct >= 0 ? '+' : ''}{row.pnl_pct.toFixed(2)}%)</span></div>) : <span className="text-slate-700">—</span>}
+        {Math.abs(row.market_value) > 0 ? (
+          <div className="flex flex-col text-right leading-tight font-mono">
+            <div className="flex justify-end items-baseline gap-1">
+              <span className="font-black text-slate-100 text-xs">${row.market_value.toLocaleString(undefined, {maximumFractionDigits:0})}</span>
+              <span className="text-[8px] text-slate-500 font-bold uppercase">x{row.qty}</span>
+            </div>
+            <span className={`text-[9px] font-black ${row.pnl_pct >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
+              ({row.pnl_pct >= 0 ? '+' : ''}{row.pnl_pct.toFixed(2)}%)
+            </span>
+          </div>
+        ) : <span className="text-slate-700">—</span>}
       </td>
       <td onClick={() => onSelectTicker(row.ticker)} className="text-right py-1.5 pr-2"><span className={"text-[9px] px-1.5 py-0.5 rounded-sm border uppercase font-black tracking-widest " + (row.score > 0 ? "border-emerald-900/50 text-emerald-500 bg-emerald-500/5" : "border-rose-900/50 text-rose-500 bg-rose-500/5")}>{row.score > 0 ? "Long" : "Short"}</span></td>
     </tr>
@@ -399,8 +411,8 @@ const AlphaGainChart = ({ data }) => {
   const [range, setRange] = useState('ALL');
   const ranges = [{ label: '1W', val: 7 }, { label: '1M', val: 30 }, { label: '3M', val: 90 }, { label: '1Y', val: 365 }, { label: 'ALL', val: null }];
   
-  const { filteredData, rangeAlpha } = React.useMemo(() => {
-    if (!data || data.length === 0) return { filteredData: [], rangeAlpha: 0 };
+  const { filteredData, rangeAlpha, splitOffset } = React.useMemo(() => {
+    if (!data || data.length === 0) return { filteredData: [], rangeAlpha: 0, splitOffset: 0 };
     
     let slice = data;
     if (range !== 'ALL') {
@@ -408,19 +420,32 @@ const AlphaGainChart = ({ data }) => {
       slice = data.slice(-r.val);
     }
     
-    if (slice.length < 2) return { filteredData: slice, rangeAlpha: 0 };
+    if (slice.length < 2) return { filteredData: slice, rangeAlpha: 0, splitOffset: 0 };
     
     const latest = slice[slice.length - 1].alpha;
     const start = slice[0].alpha;
-    return { filteredData: slice, rangeAlpha: latest - start };
+    
+    // Calculate precise gradient offset for the 0.0 line
+    const alphas = slice.map(d => d.alpha);
+    const dataMax = Math.max(...alphas);
+    const dataMin = Math.min(...alphas);
+    
+    let offset = 0;
+    if (dataMax <= 0) offset = 0; // Entirely below zero
+    else if (dataMin >= 0) offset = 1; // Entirely above zero
+    else offset = dataMax / (dataMax - dataMin);
+
+    return { filteredData: slice, rangeAlpha: latest - start, splitOffset: offset };
   }, [data, range]);
 
   return (
     <div className="flex-none flex flex-col mt-4 border-t border-slate-800/60 pt-4">
       <div className="flex justify-between items-center mb-2">
         <div className="flex flex-col">
-          <div className={`text-[10px] font-bold uppercase tracking-widest ${rangeAlpha >= 0 ? 'text-emerald-400' : 'text-rose-500'}`}>
-            Alpha Velocity :: {rangeAlpha >= 0 ? '+' : ''}{rangeAlpha.toFixed(2)}% {range}
+          <div className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
+            Alpha Velocity :: <span className={rangeAlpha >= 0 ? 'text-emerald-400' : 'text-rose-500'}>
+                {rangeAlpha >= 0 ? '+' : ''}{rangeAlpha.toFixed(2)}% {range}
+            </span>
           </div>
         </div>
         <div className="flex gap-1">
@@ -432,12 +457,21 @@ const AlphaGainChart = ({ data }) => {
       <div className="h-[180px] w-full bg-black/40 border border-slate-800/60 p-2 shadow-inner">
         <ResponsiveContainer width="100%" height="100%">
           <AreaChart data={filteredData}>
-            <defs><linearGradient id="colorAlpha" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#10b981" stopOpacity={0.3}/><stop offset="95%" stopColor="#10b981" stopOpacity={0}/></linearGradient></defs>
+            <defs>
+                <linearGradient id="splitFill" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset={splitOffset} stopColor="#10b981" stopOpacity={0.3} />
+                    <stop offset={splitOffset} stopColor="#ef4444" stopOpacity={0.3} />
+                </linearGradient>
+                <linearGradient id="splitStroke" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset={splitOffset} stopColor="#10b981" stopOpacity={1} />
+                    <stop offset={splitOffset} stopColor="#ef4444" stopOpacity={1} />
+                </linearGradient>
+            </defs>
             <CartesianGrid strokeDasharray="1 12" stroke="#1e293b" vertical={false} />
             <XAxis dataKey="time" hide />
             <YAxis domain={['auto', 'auto']} stroke="#cbd5e1" fontSize={8} tickFormatter={(v) => v.toFixed(1) + "%"} />
             <Tooltip contentStyle={{backgroundColor: '#000', border: '1px solid #1e293b', fontSize: '10px'}} formatter={(val) => [val.toFixed(2) + "%", 'Cumulative Alpha']} />
-            <Area type="monotone" dataKey="alpha" stroke="#10b981" fillOpacity={1} fill="url(#colorAlpha)" dot={false} strokeWidth={3} />
+            <Area type="monotone" dataKey="alpha" stroke="url(#splitStroke)" fill="url(#splitFill)" dot={false} strokeWidth={3} />
           </AreaChart>
         </ResponsiveContainer>
       </div>

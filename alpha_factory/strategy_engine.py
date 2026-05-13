@@ -119,6 +119,11 @@ class StrategyEngine:
             # Average VSN weights over the sequence length for interpretability
             past_weights = out_dict['past_weights'].mean(dim=1).cpu().numpy() # [batch, n_vars]
 
+            # Vectorized Signal Energy (Spatial Wavelet mean magnitude)
+            energy_all = torch.zeros(len(batch.tickers))
+            if 'x_past_x_spatial' in batch.data:
+                energy_all = torch.mean(torch.abs(batch.data['x_past_x_spatial']), dim=(1, 2)).cpu()
+
         # Build House View Ladder
         ladder = []
         for i, ticker in enumerate(batch.tickers):
@@ -140,10 +145,8 @@ class StrategyEngine:
             if 'raw_price' in batch.data:
                 raw_price = float(batch.data['raw_price'][i].item())
                 
-            # Signal Energy proxy (Spatial Wavelet mean magnitude)
-            energy = 0.0
-            if 'x_past_x_spatial' in batch.data:
-                energy = float(torch.mean(torch.abs(batch.data['x_past_x_spatial'][i])).item())
+            # Grab pre-calculated energy
+            energy = float(energy_all[i].item())
             
             ladder.append({
                 "ticker": ticker,

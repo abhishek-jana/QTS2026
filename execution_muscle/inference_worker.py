@@ -25,8 +25,7 @@ from execution_muscle.risk_parity_sizer import RiskParitySizer
 
 class NumpyEncoder(json.JSONEncoder):
     def default(self, obj):
-        if isinstance(obj, np.integer): return int(obj)
-        if isinstance(obj, np.floating): return float(obj)
+        if hasattr(obj, 'item'): return obj.item()
         if isinstance(obj, np.ndarray): return obj.tolist()
         return super(NumpyEncoder, self).default(obj)
 
@@ -110,6 +109,7 @@ class InferenceWorker:
         self.sim_price_memory = {}; self.last_target_lev = None; self.last_concentration = None
         self.is_initialized = False; self.spy_start_p = None; self.sim_signal_queue = None
         self.ic_buffer = [] # To store (date, scores_dict, prices_at_T) for Realized IC
+        self.alpha_history = [] # Ferrari O(1) buffer for alpha velocity
         
         self.live_bot = None
         if self.trading_mode in ['paper', 'live']:
@@ -239,7 +239,7 @@ class InferenceWorker:
             picks_with_qty.append({"ticker": t, "qty": qty, "score": next(x['score'] for x in house_view['ladder'] if x['ticker'] == t)})
 
         current_decision = {
-            "date": self.current_knowledge_time.strftime("%Y-%m-%d"),
+            "date": self.current_knowledge_time.strftime("%Y-%m-%d %H:%M"),
             "should_reb": should_reb_signal,
             "target_lev": target_lev_signal,
             "concentration": concentration_signal,
@@ -443,7 +443,7 @@ class InferenceWorker:
                     "sells_display": sells,
                     "status": "QUEUED"
                 }
-                self.redis_client.set('uqts:live:pending_decision', json.dumps(decision))
+                self.redis_client.set('uqts:live:pending_decision', json.dumps(decision, cls=NumpyEncoder))
                 self.redis_client.set('uqts:live:last_plan_date', today_str)
                 
                 picks_display = [f"{x['ticker']}({x['qty']})" for x in picks_with_qty]
@@ -580,7 +580,7 @@ class InferenceWorker:
                         qty = self.sim_positions.get(t, 0.0) if self.trading_mode == 'sim' else self.live_bot.positions.get(t, 0.0)
                         entry_p = self.sim_avg_costs.get(t, p) if self.trading_mode == 'sim' else p
                         mv = qty * p; pnl = ((p/max(entry_p, 1e-6))-1)*100 if entry_p > 0 else 0.0
-                        ladder_ui.append({"ticker": t, "score": float(score), "live_price": float(p), "market_value": float(mv), "pnl_pct": float(pnl), "sector": self.sector_map.get(t, "Other")})
+                        ladder_ui.append({"ticker": t, "score": float(score), "live_price": float(p), "qty": int(qty), "market_value": float(mv), "pnl_pct": float(pnl), "sector": self.sector_map.get(t, "Other")})
                     
                     focused = self.redis_client.get('uqts:focused_ticker')
                     if focused:
@@ -597,12 +597,16 @@ class InferenceWorker:
                     
                     logger.debug(f"[{self.current_knowledge_time.strftime('%Y-%m-%d')}] AGENT: ${stats['nlv']:,.2f} ({gain_pct:+.2f}%) | SPY: ${spy_cap:,.2f} | Fees: ${self.cumulative_fees:,.2f} | Pos: {stats['active_pos']}")
 
-                    self.performance_history.append({"time": self.current_knowledge_time.strftime("%Y-%m-%d"), "portfolio": float(stats['nlv']), "spy": float(spy_cap)})
-                    alpha_curve = [{"time": h['time'], "alpha": ((h['portfolio']/100000)-(h['spy']/100000))*100} for h in self.performance_history]
+                    timestamp_str = self.current_knowledge_time.strftime("%Y-%m-%d")
+                    self.performance_history.append({"time": timestamp_str, "portfolio": float(stats['nlv']), "spy": float(spy_cap)})
+                    
+                    # Ferrari O(1) update
+                    new_alpha = ((float(stats['nlv'])/100000.0)-(float(spy_cap)/100000.0))*100.0
+                    self.alpha_history.append({"time": timestamp_str, "alpha": new_alpha})
 
                     payload = {
                         "timestamp": self.current_knowledge_time.strftime("%Y-%m-%d %H:%M:%S"),
-                        "metacognition": {"policy_conviction": float(stats['conviction']), "rl_leverage": float(stats['leverage']), "rl_hedge": 0.0, "concentration": int(stats['concentration']), "strategy_sensors": stats['sensors'], "alpha_gain": alpha_curve},
+                        "metacognition": {"policy_conviction": float(stats['conviction']), "rl_leverage": float(stats['leverage']), "rl_hedge": 0.0, "concentration": int(stats['concentration']), "strategy_sensors": stats['sensors'], "alpha_gain": self.alpha_history},
                         "institutional": {
                             "capital": float(stats['nlv']), "active_positions": int(stats['active_pos']), "gross_exposure": float(stats['gross_exposure']), "buying_power": float(stats['buying_power']),
                             "roe": float(stats['roe']), "sector_exposure": stats['sector_exposure'], "oms_queue": self.live_bot.oms_stats if self.live_bot else self.oms_queue, 
@@ -610,7 +614,12 @@ class InferenceWorker:
                             "trading_mode": self.trading_mode, "performance_history": self.performance_history,
                             "pending_decision": stats.get('pending_decision')
                         },
-                        "execution": {"implementation_shortfall": float(stats['shortfall']), "cumulative_fees": float(self.cumulative_fees), "is_var": 0.0001, "slippage_heatmap": [[float(0.1 + (i*j*0.05) + np.random.random()*0.1) for j in range(5)] for i in range(5)]},
+                        "execution": {
+                            "implementation_shortfall": float(stats['shortfall']), 
+                            "cumulative_fees": float(self.cumulative_fees), 
+                            "is_var": 0.0001, 
+                            "slippage_heatmap": [[float(min(1.0, stats['shortfall']*0.1 + np.random.random()*0.1)) for _ in range(5)] for _ in range(5)]
+                        },
                         "pipeline": {"champion_sharpe": 1.15, "challenger_sharpe": float(stats['sensors']['sharpe'])},
                         "rankings": {"ladder": ladder_ui}, "type": "GLOBAL_UPDATE"
                     }
