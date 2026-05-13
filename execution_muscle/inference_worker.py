@@ -571,80 +571,80 @@ class InferenceWorker:
                 
                 # DYNAMIC REALIZED IC (Spearman)
                 if self.trading_mode == 'sim':
-                        # Store current scores/prices for IC checking in 3 days
-                        self.ic_buffer.append({"date": self.current_knowledge_time, "scores": scores_dict, "prices": prices.copy()})
-                        if len(self.ic_buffer) > 3:
-                            past_data = self.ic_buffer.pop(0)
-                            realized_rets = []
-                            predicted_scores = []
-                            for t in self.tickers:
-                                if t in prices and t in past_data['prices']:
-                                    ret = (prices[t] / (past_data['prices'][t] + 1e-9)) - 1
-                                    realized_rets.append(ret)
-                                    predicted_scores.append(past_data['scores'].get(t, 0.0))
-                            if len(realized_rets) > 10:
-                                ic_val, _ = spearmanr(predicted_scores, realized_rets)
-                                self.realized_ic = max(0, ic_val) # Clamp to positive for signal health
+                    # Store current scores/prices for IC checking in 3 days
+                    self.ic_buffer.append({"date": self.current_knowledge_time, "scores": scores_dict, "prices": prices.copy()})
+                    if len(self.ic_buffer) > 3:
+                        past_data = self.ic_buffer.pop(0)
+                        realized_rets = []
+                        predicted_scores = []
+                        for t in self.tickers:
+                            if t in prices and t in past_data['prices']:
+                                ret = (prices[t] / (past_data['prices'][t] + 1e-9)) - 1
+                                realized_rets.append(ret)
+                                predicted_scores.append(past_data['scores'].get(t, 0.0))
+                        if len(realized_rets) > 10:
+                            ic_val, _ = spearmanr(predicted_scores, realized_rets)
+                            self.realized_ic = max(0, ic_val) # Clamp to positive for signal health
 
-                    ladder_ui = []
-                    for t in self.tickers:
-                        p = prices.get(t, 0.0); score = scores_dict.get(t, 0.0)
-                        qty = self.sim_positions.get(t, 0.0) if self.trading_mode == 'sim' else self.live_bot.positions.get(t, 0.0)
-                        entry_p = self.sim_avg_costs.get(t, p) if self.trading_mode == 'sim' else p
-                        mv = qty * p; pnl = ((p/max(entry_p, 1e-6))-1)*100 if entry_p > 0 else 0.0
-                        ladder_ui.append({"ticker": t, "score": float(score), "live_price": float(p), "qty": int(qty), "market_value": float(mv), "pnl_pct": float(pnl), "sector": self.sector_map.get(t, "Other")})
-                    
-                    focused = self.redis_client.get('uqts:focused_ticker')
-                    if focused:
-                        diag = self.strategy.get_ticker_diagnostics(focused, as_of=self.current_knowledge_time)
-                        if diag:
-                            pld = { 
-                                "type": "SPECTRAL_UPDATE", 
-                                "spectral": { 
-                                    "ticker": focused, 
-                                    "history": diag['history'], 
-                                    "cwt": diag['cwt'], # NumpyEncoder will handle list conversion
-                                    "adf_p_value": diag['adf_p'], 
-                                    "shap_values": diag['shap_fusion'] 
-                                } 
-                            }
-                            self.redis_client.publish(f'uqts:spectral:{focused}', json.dumps(pld, cls=NumpyEncoder))
-                        else:
-                            logger.warning(f"📉 SPECTRAL DRIFT: No data for {focused} as of {self.current_knowledge_time}")
+                ladder_ui = []
+                for t in self.tickers:
+                    p = prices.get(t, 0.0); score = scores_dict.get(t, 0.0)
+                    qty = self.sim_positions.get(t, 0.0) if self.trading_mode == 'sim' else self.live_bot.positions.get(t, 0.0)
+                    entry_p = self.sim_avg_costs.get(t, p) if self.trading_mode == 'sim' else p
+                    mv = qty * p; pnl = ((p/max(entry_p, 1e-6))-1)*100 if entry_p > 0 else 0.0
+                    ladder_ui.append({"ticker": t, "score": float(score), "live_price": float(p), "qty": int(qty), "market_value": float(mv), "pnl_pct": float(pnl), "sector": self.sector_map.get(t, "Other")})
+                
+                focused = self.redis_client.get('uqts:focused_ticker')
+                if focused:
+                    diag = self.strategy.get_ticker_diagnostics(focused, as_of=self.current_knowledge_time)
+                    if diag:
+                        pld = { 
+                            "type": "SPECTRAL_UPDATE", 
+                            "spectral": { 
+                                "ticker": focused, 
+                                "history": diag['history'], 
+                                "cwt": diag['cwt'], # NumpyEncoder will handle list conversion
+                                "adf_p_value": diag['adf_p'], 
+                                "shap_values": diag['shap_fusion'] 
+                            } 
+                        }
+                        self.redis_client.publish(f'uqts:spectral:{focused}', json.dumps(pld, cls=NumpyEncoder))
+                    else:
+                        logger.warning(f"📉 SPECTRAL DRIFT: No data for {focused} as of {self.current_knowledge_time}")
 
-                    spy_p = prices.get('SPY', self.spy_start_p or 1.0)
-                    spy_cap = (spy_p / self.spy_start_p) * 100000.0 if self.spy_start_p else 100000.0
-                    gain_pct = (stats['nlv'] / 100000.0 - 1) * 100.0
-                    
-                    logger.debug(f"[{self.current_knowledge_time.strftime('%Y-%m-%d')}] AGENT: ${stats['nlv']:,.2f} ({gain_pct:+.2f}%) | SPY: ${spy_cap:,.2f} | Fees: ${self.cumulative_fees:,.2f} | Pos: {stats['active_pos']}")
+                spy_p = prices.get('SPY', self.spy_start_p or 1.0)
+                spy_cap = (spy_p / self.spy_start_p) * 100000.0 if self.spy_start_p else 100000.0
+                gain_pct = (stats['nlv'] / 100000.0 - 1) * 100.0
+                
+                logger.debug(f"[{self.current_knowledge_time.strftime('%Y-%m-%d')}] AGENT: ${stats['nlv']:,.2f} ({gain_pct:+.2f}%) | SPY: ${spy_cap:,.2f} | Fees: ${self.cumulative_fees:,.2f} | Pos: {stats['active_pos']}")
 
-                    timestamp_str = self.current_knowledge_time.strftime("%Y-%m-%d")
-                    self.performance_history.append({"time": timestamp_str, "portfolio": float(stats['nlv']), "spy": float(spy_cap)})
-                    
-                    # Ferrari O(1) update
-                    new_alpha = ((float(stats['nlv'])/100000.0)-(float(spy_cap)/100000.0))*100.0
-                    self.alpha_history.append({"time": timestamp_str, "alpha": new_alpha})
+                timestamp_str = self.current_knowledge_time.strftime("%Y-%m-%d")
+                self.performance_history.append({"time": timestamp_str, "portfolio": float(stats['nlv']), "spy": float(spy_cap)})
+                
+                # Ferrari O(1) update
+                new_alpha = ((float(stats['nlv'])/100000.0)-(float(spy_cap)/100000.0))*100.0
+                self.alpha_history.append({"time": timestamp_str, "alpha": new_alpha})
 
-                    payload = {
-                        "timestamp": self.current_knowledge_time.strftime("%Y-%m-%d %H:%M:%S"),
-                        "metacognition": {"policy_conviction": float(stats['conviction']), "rl_leverage": float(stats['leverage']), "rl_hedge": 0.0, "concentration": int(stats['concentration']), "strategy_sensors": stats['sensors'], "alpha_gain": self.alpha_history},
-                        "institutional": {
-                            "capital": float(stats['nlv']), "active_positions": int(stats['active_pos']), "gross_exposure": float(stats['gross_exposure']), "buying_power": float(stats['buying_power']),
-                            "roe": float(stats['roe']), "sector_exposure": stats['sector_exposure'], "oms_queue": self.live_bot.oms_stats if self.live_bot else self.oms_queue, 
-                            "order_log": self.live_bot.order_log[-10:] if self.live_bot else self.order_log[-10:],
-                            "trading_mode": self.trading_mode, "performance_history": self.performance_history,
-                            "pending_decision": stats.get('pending_decision')
-                        },
-                        "execution": {
-                            "implementation_shortfall": float(stats['shortfall']), 
-                            "cumulative_fees": float(self.cumulative_fees), 
-                            "is_var": 0.0001, 
-                            "slippage_heatmap": [[float(min(1.0, stats['shortfall']*0.1 + np.random.random()*0.1)) for _ in range(5)] for _ in range(5)]
-                        },
-                        "pipeline": {"champion_sharpe": 1.15, "challenger_sharpe": float(stats['sensors']['sharpe'])},
-                        "rankings": {"ladder": ladder_ui}, "type": "GLOBAL_UPDATE"
-                    }
-                    self.redis_client.publish('uqts:global', json.dumps(payload, cls=NumpyEncoder))
+                payload = {
+                    "timestamp": self.current_knowledge_time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "metacognition": {"policy_conviction": float(stats['conviction']), "rl_leverage": float(stats['leverage']), "rl_hedge": 0.0, "concentration": int(stats['concentration']), "strategy_sensors": stats['sensors'], "alpha_gain": self.alpha_history},
+                    "institutional": {
+                        "capital": float(stats['nlv']), "active_positions": int(stats['active_pos']), "gross_exposure": float(stats['gross_exposure']), "buying_power": float(stats['buying_power']),
+                        "roe": float(stats['roe']), "sector_exposure": stats['sector_exposure'], "oms_queue": self.live_bot.oms_stats if self.live_bot else self.oms_queue, 
+                        "order_log": self.live_bot.order_log[-10:] if self.live_bot else self.order_log[-10:],
+                        "trading_mode": self.trading_mode, "performance_history": self.performance_history,
+                        "pending_decision": stats.get('pending_decision')
+                    },
+                    "execution": {
+                        "implementation_shortfall": float(stats['shortfall']), 
+                        "cumulative_fees": float(self.cumulative_fees), 
+                        "is_var": 0.0001, 
+                        "slippage_heatmap": [[float(min(1.0, stats['shortfall']*0.1 + np.random.random()*0.1)) for _ in range(5)] for _ in range(5)]
+                    },
+                    "pipeline": {"champion_sharpe": 1.15, "challenger_sharpe": float(stats['sensors']['sharpe'])},
+                    "rankings": {"ladder": ladder_ui}, "type": "GLOBAL_UPDATE"
+                }
+                self.redis_client.publish('uqts:global', json.dumps(payload, cls=NumpyEncoder))
             
             if self.trading_mode == 'sim': 
                 self.current_knowledge_time += timedelta(days=1)
