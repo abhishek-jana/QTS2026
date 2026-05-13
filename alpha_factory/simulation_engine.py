@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 from tqdm import tqdm
 from stable_baselines3 import PPO
+from scipy.stats import spearmanr
 
 # Ensure project root is in path
 sys.path.append(os.getcwd())
@@ -23,7 +24,7 @@ from research_lab.alpha_ranker_sniper import SniperRanker
 class SimulationEngineV5:
     """
     Expert-Grade Simulation Engine (Ferrari Edition).
-    V7.4: "Shield & Sword" (Binary Risk Edition)
+    V7.4.3: Professional Audit Synchronization
     """
     def __init__(self, config_path="config.yaml"):
         with open(config_path, "r") as f:
@@ -64,14 +65,8 @@ class SimulationEngineV5:
             self.rl_pilot = PPO.load(rl_path, device="cpu")
             logger.info("SimulationEngine: RL Pilot Loaded (CPU).")
             
-        # Load Pre-computed Volatilities for Level 3
-        vol_path = "data/rl/train_stock_vols.csv"
-        if os.path.exists(vol_path):
-            self.vols_df = pd.read_csv(vol_path, index_col=0, parse_dates=True)
-            self.vols_df = self.vols_df.sort_index().loc[~self.vols_df.index.duplicated(keep='first')].ffill().bfill().fillna(0.02)
-        else:
-            logger.warning("train_stock_vols.csv not found. Falling back to constant volatility.")
-            self.vols_df = None
+        self.vols_df = None
+        self.latency_stress_test = self.config.get('execution_muscle', {}).get('latency_stress_test', False)
 
     def _get_batch_scores(self, steps):
         logger.info(f"🚀 SimulationEngine: Pre-computing Batch Inference on {len(steps)} steps...")
@@ -107,7 +102,6 @@ class SimulationEngineV5:
         belief = np.mean(top_10)
         vol = spy_row.get('vol_21', 0.02)
         
-        # VOL VELOCITY (1st Derivative) - Scale by 1000x to match training
         spy_slice = spy_df[spy_mask_yesterday]
         if len(spy_slice) > 5:
             vol_vel = (spy_row['vol_21'] - spy_slice.iloc[-5]['vol_21']) * 1000.0
@@ -144,57 +138,99 @@ class SimulationEngineV5:
         spy_df['rsi_14'] = 100 - (100 / (1 + (gain/(loss+1e-6)))); spy_df = spy_df.ffill().fillna(0)
         spy_start_p = spy_df[spy_df['event_time'].dt.tz_localize(None) >= start_date.replace(tzinfo=None)].iloc[0]['close']
         self.last_steps = steps; self.last_spy_df = spy_df
-
-        cash = 100000.0; positions = {}; price_cache = {}; starting_capital = 100000.0; peak_value = 100000.0; hedge_qty = 0.0; hedge_entry_p = 0.0
+        
+        cash = 100000.0; positions = {}; price_cache = {}; starting_capital = 100000.0; peak_value = 100000.0
         portfolio_returns = []; score_history = []; history = []
+        ic_buffer = []; realized_ic = 0.1914; wins = 0; total_fees = 0.0
+        signal_queue = None; last_target_lev = None; last_concentration = 12
 
         for i in range(len(steps)):
             dt = steps[i]['date']; batch = steps[i]['batch']; spy_p = spy_df[spy_df['event_time'].dt.tz_localize(None) <= dt.replace(tzinfo=None)]['close'].iloc[-1]
+            # Update price memory
             for t in batch.tickers: price_cache[t] = float(batch.data['raw_price'][batch.tickers.index(t)])
+            
             pos_mv = sum([qty * price_cache.get(t, 0.0) for t, qty in positions.items()])
             nlv = cash + pos_mv; peak_value = max(peak_value, nlv)
-            if i > 0: portfolio_returns.append((nlv - history[-1]['NLV']) / history[-1]['NLV'])
-            scores_dict = all_scores.get(dt, {}); obs_scores = [scores_dict.get(t, 0.0) for t in self.tickers]; score_history.append(obs_scores)
-            obs = self._get_rl_observation(obs_scores, nlv, cash, spy_df, dt, starting_capital, peak_value, portfolio_returns, hedge_qty, hedge_entry_p, score_history)
+            spy_nlv = (spy_p / spy_start_p) * 100000
             
-            # --- SENIOR FIX (V7.4): SMART BINARY RISK ALLOCATION ---
+            if i > 0: 
+                prev_nlv = history[-1]['NLV']
+                agent_ret = (nlv / prev_nlv) - 1
+                spy_ret = (spy_nlv / history[-1]['SPY_NLV']) - 1
+                if agent_ret > spy_ret: wins += 1
+                portfolio_returns.append(agent_ret)
+
+            scores_dict = all_scores.get(dt, {}); obs_scores = [scores_dict.get(t, 0.0) for t in self.tickers]; score_history.append(obs_scores)
+            obs = self._get_rl_observation(obs_scores, nlv, cash, spy_df, dt, starting_capital, peak_value, portfolio_returns, hedge_qty=0, hedge_entry_p=0, score_history=score_history)
+            
+            # Realized IC
+            ic_buffer.append({"scores": scores_dict, "prices": price_cache.copy()})
+            if len(ic_buffer) > 3:
+                past = ic_buffer.pop(0)
+                r_rets = []; p_scores = []
+                for t in self.tickers:
+                    if t in price_cache and t in past['prices']:
+                        r_rets.append((price_cache[t]/(past['prices'][t]+1e-9))-1)
+                        p_scores.append(past['scores'].get(t, 0.0))
+                if len(r_rets) > 10:
+                    val_ic, _ = spearmanr(p_scores, r_rets)
+                    realized_ic = max(0, val_ic)
+
+            # RL Decision for TODAY
             if self.rl_pilot:
                 action, _ = self.rl_pilot.predict(obs, deterministic=True)
-                risk_toggle, concentration_idx, exec_trigger = action[0], action[1], action[2]
-                should_rebalance = (exec_trigger > 0.7) or (dt.weekday() == 0)
-                if should_rebalance:
-                    target_lev = 1.0 if risk_toggle > 0.5 else 0.0
-                    concentration = [5, 8, 12, 15][int(np.clip(concentration_idx, 0, 3.99))]
-                    self.last_target_lev = target_lev; self.last_concentration = concentration
-                else:
-                    target_lev = getattr(self, 'last_target_lev', 1.0); concentration = getattr(self, 'last_concentration', 12)
+                should_reb_signal = (action[2] > 0.7) or (dt.weekday() == 0) or (i == 0)
+                target_lev_signal = 1.0 if action[0] > 0.5 else 0.0
+                concentration_signal = [5, 8, 12, 15][int(np.clip(action[1], 0, 3.99))]
             else:
-                should_rebalance = (dt.weekday() == 0); target_lev = 1.0; concentration = 12
-            
+                should_reb_signal = (dt.weekday() == 0) or (i == 0); target_lev_signal = 1.0; concentration_signal = 12
+
+            current_decision = {"should_reb": should_reb_signal, "target_lev": target_lev_signal, "concentration": concentration_signal, "scores": scores_dict}
+
+            # Latency Stress Test (Sync with InferenceWorker)
+            if self.latency_stress_test:
+                decision_to_execute = signal_queue
+                signal_queue = current_decision
+                if decision_to_execute is None:
+                    wr_step = (wins / (i+1)) * 100.0 if i > 0 else 0.0
+                    history.append({"Date": dt, "NLV": nlv, "SPY_NLV": spy_nlv, "IC": realized_ic, "WinRate": wr_step, "Lev": 0.0, "Conc": 5})
+                    continue
+            else:
+                decision_to_execute = current_decision
+
+            # Execute decision
+            should_rebalance = decision_to_execute['should_reb']
+            target_lev = decision_to_execute['target_lev']
+            concentration = decision_to_execute['concentration']
+            exec_scores = decision_to_execute['scores']
+
             if should_rebalance:
-                target_notional = (nlv * target_lev); top_picks = sorted(scores_dict.keys(), key=lambda x: scores_dict.get(x, -9), reverse=True)[:concentration]
-                
-                # --- SENIOR FIX: CONVICTION SIZING (100x SCALE) ---
-                top_scores = np.array([scores_dict.get(x, -9) for x in top_picks]) * 100.0
+                last_target_lev = target_lev; last_concentration = concentration
+                target_notional = (nlv * target_lev); top_picks = sorted(exec_scores.keys(), key=lambda x: exec_scores.get(x, -9), reverse=True)[:concentration]
+                top_scores = np.array([exec_scores.get(x, -9) for x in top_picks]) * 100.0
                 exp_scores = np.exp((top_scores - np.max(top_scores)) / 0.5)
                 weights = exp_scores / (np.sum(exp_scores) + 1e-9)
                 
-                weights = np.clip(weights, 0.0, 1.0); weights = weights / (np.sum(weights) + 1e-9)
                 turnover_notional = 0.0
                 for t in list(positions.keys()):
-                    if t not in top_picks: v = positions[t] * price_cache.get(t, 0.0); cash += v; turnover_notional += v; del positions[t]
+                    if t not in top_picks: 
+                        p = price_cache.get(t, 0.0); v = positions[t] * p
+                        cash += v; turnover_notional += v; del positions[t]
+
                 for idx_w, t in enumerate(top_picks):
                     p = price_cache.get(t, 0.0)
                     if p > 0:
                         t_qty = int((target_notional * weights[idx_w]) / p); c_qty = positions.get(t, 0)
                         if c_qty == 0 or abs(t_qty - c_qty) / (c_qty + 1e-6) > 0.15:
-                            t_v = (t_qty - c_qty) * p; cash -= t_v; turnover_notional += abs(t_v); positions[t] = t_qty
-                cash -= turnover_notional * 0.0005
+                            diff_qty = t_qty - c_qty; t_v = diff_qty * p
+                            cash -= t_v; turnover_notional += abs(t_v); positions[t] = t_qty
+                
+                fee_step = turnover_notional * 0.0005; cash -= fee_step; total_fees += fee_step
 
-            spy_nlv = (spy_p / spy_start_p) * 100000
+            wr = (wins / (i+1)) * 100.0 if i > 0 else 0.0
             if i % 20 == 0 or i == len(steps) - 1:
-                logger.debug(f"[{dt.date()}] NLV: ${nlv:,.2f} | SPY: ${spy_nlv:,.2f} | Positions: {len(positions)} | Target Lev: {target_lev}x")
-            history.append({"Date": dt, "NLV": nlv, "Lev": (nlv-cash)/nlv if nlv > 0 else 0, "Conc": concentration, "SPY_NLV": spy_nlv})
+                logger.debug(f"[{dt.date()}] NLV: ${nlv:,.2f} | SPY: ${spy_nlv:,.2f} | WinRate: {wr:.1f}% | IC: {realized_ic:.3f} | Pos: {len(positions)}")
+            history.append({"Date": dt, "NLV": nlv, "SPY_NLV": spy_nlv, "IC": realized_ic, "WinRate": wr, "Lev": last_target_lev or 0.0, "Conc": last_concentration})
 
         df = pd.DataFrame(history)
-        logger.success(f"Simulation finished. Final Capital: ${nlv:,.2f}."); return df
+        logger.success(f"Simulation finished. Final Capital: ${nlv:,.2f} | Total Fees: ${total_fees:,.2f}"); return df

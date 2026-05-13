@@ -7,7 +7,7 @@ data_engine:
   storage_path: data/uqts_v2_intraday.ddb
   timeframe: 15Min
 execution_muscle:
-  latency_stress_test: true
+  latency_stress_test: true #buys next day evening at 4:00 PM instead of 9:30 AM
   max_position_size: 0.10
   min_belief_threshold: 0.65
   risk_parity_sizing: false

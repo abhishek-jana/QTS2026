@@ -399,31 +399,44 @@ const AlphaGainChart = ({ data }) => {
   const [range, setRange] = useState('ALL');
   const ranges = [{ label: '1W', val: 7 }, { label: '1M', val: 30 }, { label: '3M', val: 90 }, { label: '1Y', val: 365 }, { label: 'ALL', val: null }];
   
-  const filteredData = React.useMemo(() => {
-    if (!data) return [];
-    if (range === 'ALL') return data;
-    const r = ranges.find(x => x.label === range);
-    return data.slice(-r.val);
+  const { filteredData, rangeAlpha } = React.useMemo(() => {
+    if (!data || data.length === 0) return { filteredData: [], rangeAlpha: 0 };
+    
+    let slice = data;
+    if (range !== 'ALL') {
+      const r = ranges.find(x => x.label === range);
+      slice = data.slice(-r.val);
+    }
+    
+    if (slice.length < 2) return { filteredData: slice, rangeAlpha: 0 };
+    
+    const latest = slice[slice.length - 1].alpha;
+    const start = slice[0].alpha;
+    return { filteredData: slice, rangeAlpha: latest - start };
   }, [data, range]);
 
   return (
     <div className="flex-none flex flex-col mt-4 border-t border-slate-800/60 pt-4">
       <div className="flex justify-between items-center mb-2">
-        <div className="text-[10px] text-slate-300 font-bold uppercase tracking-widest">Cumulative Alpha Gain (%)</div>
+        <div className="flex flex-col">
+          <div className={`text-[10px] font-bold uppercase tracking-widest ${rangeAlpha >= 0 ? 'text-emerald-400' : 'text-rose-500'}`}>
+            Alpha Velocity :: {rangeAlpha >= 0 ? '+' : ''}{rangeAlpha.toFixed(2)}% {range}
+          </div>
+        </div>
         <div className="flex gap-1">
           {ranges.map(r => (
-            <button key={r.label} onClick={() => setRange(r.label)} className={`px-1.5 py-0.5 text-[7px] font-black border transition-all ${range === r.label ? 'bg-emerald-500 text-black' : 'border-slate-800 text-slate-500'}`}>{r.label}</button>
+            <button key={r.label} onClick={() => setRange(r.label)} className={`px-1.5 py-0.5 text-[7px] font-black border transition-all ${range === r.label ? 'bg-emerald-500 text-black border-emerald-500 shadow-[0_0_5px_rgba(16,185,129,0.3)]' : 'border-slate-800 text-slate-500 hover:text-white'}`}>{r.label}</button>
           ))}
         </div>
       </div>
-      <div className="h-[180px] w-full">
+      <div className="h-[180px] w-full bg-black/40 border border-slate-800/60 p-2 shadow-inner">
         <ResponsiveContainer width="100%" height="100%">
           <AreaChart data={filteredData}>
             <defs><linearGradient id="colorAlpha" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#10b981" stopOpacity={0.3}/><stop offset="95%" stopColor="#10b981" stopOpacity={0}/></linearGradient></defs>
             <CartesianGrid strokeDasharray="1 12" stroke="#1e293b" vertical={false} />
             <XAxis dataKey="time" hide />
             <YAxis domain={['auto', 'auto']} stroke="#cbd5e1" fontSize={8} tickFormatter={(v) => v.toFixed(1) + "%"} />
-            <Tooltip contentStyle={{backgroundColor: '#000', border: '1px solid #1e293b', fontSize: '10px'}} formatter={(val) => [val.toFixed(2) + "%", 'Alpha']} />
+            <Tooltip contentStyle={{backgroundColor: '#000', border: '1px solid #1e293b', fontSize: '10px'}} formatter={(val) => [val.toFixed(2) + "%", 'Cumulative Alpha']} />
             <Area type="monotone" dataKey="alpha" stroke="#10b981" fillOpacity={1} fill="url(#colorAlpha)" dot={false} strokeWidth={3} />
           </AreaChart>
         </ResponsiveContainer>

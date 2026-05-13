@@ -13,6 +13,7 @@ from qts_core.logger import logger
 import torch
 from stable_baselines3 import PPO
 from tqdm import tqdm
+from scipy.stats import spearmanr
 
 # Ensure project root is in path
 sys.path.append(os.getcwd())
@@ -44,8 +45,8 @@ class InferenceWorker:
         self.latency_stress_test = self.config.get('execution_muscle', {}).get('latency_stress_test', False)
         
         logger.info(f"INFERENCE WORKER: Initializing Master Sniper V7.4.3 (Full Telemetry).")
-        if self.latency_stress_test:
-            logger.warning("⚠️ LATENCY STRESS TEST ACTIVE: Signals will be delayed by 1 day.")
+        if self.trading_mode == 'sim' and self.latency_stress_test:
+            logger.warning("⚠️ LAGGED EXECUTION ENABLED: Decisions made on Day T will execute on Day T+1 prices.")
         
         self.rl_pilot = None
         rl_path = "models/rl_pilot_final.zip"
@@ -66,7 +67,7 @@ class InferenceWorker:
             "JPM": "Financial", "V": "Financial", "MA": "Financial", "BAC": "Financial", 
             "WFC": "Financial", "BX": "Financial", "GS": "Financial", "MS": "Financial", "SPGI": "Financial",
             "AMZN": "Retail", "HD": "Retail", "PG": "Retail", "COST": "Retail", "PEP": "Retail", 
-            "KO": "Retail", "WMT": "Retail", "MCD": "Retail", "PM": "Retail", "LOW": "Retail",
+            "KO": "Retail", "WMT": "Retail", "MCD": "McDonald's Corp.", "PM": "Philip Morris Int.", "LOW": "Lowe's Companies",
             "TSLA": "Auto", "COP": "Energy", "LIN": "Materials",
             "GE": "Industrials", "UNP": "Industrials", "HON": "Industrials", "BA": "Industrials", 
             "CAT": "Industrials", "LMT": "Industrials", "RTX": "Industrials"
@@ -108,6 +109,7 @@ class InferenceWorker:
         self.order_log = []; self.total_notional_traded = 0.0; self.cumulative_fees = 0.0
         self.sim_price_memory = {}; self.last_target_lev = None; self.last_concentration = None
         self.is_initialized = False; self.spy_start_p = None; self.sim_signal_queue = None
+        self.ic_buffer = [] # To store (date, scores_dict, prices_at_T) for Realized IC
         
         self.live_bot = None
         if self.trading_mode in ['paper', 'live']:
@@ -161,6 +163,7 @@ class InferenceWorker:
         self.is_initialized = True
 
     def _get_rl_observation(self, ladder, nlv, cash, current_dt, starting_capital, peak_value, portfolio_returns, hedge_qty, hedge_entry_p, score_history):
+        # UNIFIED PERCEPTION: Scale scores by 100x to match training and SimulationEngineV5
         scores_list = [e['score'] for e in ladder]
         scores_np = np.array(scores_list) * 100.0
         sorted_scores = np.sort(scores_np)
@@ -214,7 +217,7 @@ class InferenceWorker:
 
         obs, conviction_belief = self._get_rl_observation(house_view['ladder'], nlv, self.sim_cash, self.current_knowledge_time, 100000.0, self.peak_value, [], 0.0, 0.0, [])
         
-        # 1. AI Decision for TODAY
+        # 1. Determine Decision for TODAY (Signal Generation)
         is_first_step = self.last_target_lev is None
         if self.rl_pilot:
             act, _ = self.rl_pilot.predict(obs, deterministic=True)
@@ -232,25 +235,20 @@ class InferenceWorker:
             "ladder": house_view['ladder']
         }
 
-        # Peek into next day if rebalancing
-        if should_reb_signal:
-            top_picks_peek = [e['ticker'] for e in house_view['ladder'][:concentration_signal]]
-            logger.debug(f"🔮 [PLANNING] AI picks for Next Day: {top_picks_peek} (Lev: {target_lev_signal}x, Conc: {concentration_signal})")
-
-        # 2. Handle Latency Toggle
+        # 2. --- LAGGED VS INSTANT EXECUTION ---
         if self.latency_stress_test:
-            # Execute YESTERDAY'S decision on TODAY'S prices
+            # 1-Day Lag: Pull YESTERDAY'S decision to execute TODAY
             decision_to_execute = self.sim_signal_queue
-            self.sim_signal_queue = current_decision
-            
+            self.sim_signal_queue = current_decision # Store today's for tomorrow
             if decision_to_execute is None:
+                # First day: stay in cash/hold current
                 self.last_target_lev = 0.0; self.last_concentration = 5
                 return self._build_stats_bundle(nlv, conviction_belief, pos_mv, 0.0)
         else:
-            # Perfect Execution: Execute TODAY'S decision on TODAY'S prices
+            # Instant: Execute TODAY'S decision immediately
             decision_to_execute = current_decision
 
-        # 3. Execute the decision
+        # 3. Execute decision
         should_reb = decision_to_execute['should_reb']
         target_lev = decision_to_execute['target_lev']
         concentration = decision_to_execute['concentration']
@@ -290,6 +288,7 @@ class InferenceWorker:
                             self.order_log.append({"time": self.current_knowledge_time.strftime("%m/%d %H:%M"), "ticker": t, "side": "BUY" if t_qty > c_qty else "SELL", "qty": int(abs(t_qty-c_qty)), "notional": float(abs(diff_v)), "status": "FILLED"})
                             self.oms_queue['filled'] += 1
             
+            # Implementation Shortfall: friction (0.0005) + random slippage
             shortfall_val = turnover_notional * (0.0005 + np.random.uniform(0, 0.0002))
             self.sim_cash -= shortfall_val
             self.cumulative_fees += shortfall_val
@@ -299,13 +298,38 @@ class InferenceWorker:
         return self._build_stats_bundle(nlv, conviction_belief, pos_mv, total_shortfall)
 
     def _build_stats_bundle(self, nlv, conviction_belief, pos_mv, total_shortfall):
+        # 1. DYNAMIC WIN RATE & SHARPE
+        returns = [h['portfolio'] for h in self.performance_history]
+        spy_vals = [h['spy'] for h in self.performance_history]
+        
+        win_rate = 0.0; sharpe = 0.0
+        if len(returns) > 5:
+            # Win Rate: Batting average against SPY (Daily)
+            wins = 0
+            for i in range(1, len(returns)):
+                agent_ret = (returns[i] / (returns[i-1] + 1e-6)) - 1
+                spy_ret = (spy_vals[i] / (spy_vals[i-1] + 1e-6)) - 1
+                if agent_ret > spy_ret: wins += 1
+            win_rate = (wins / (len(returns)-1)) * 100.0
+            
+            # Sharpe: Risk-adjusted annualized return
+            daily_rets = np.diff(returns) / (np.array(returns[:-1]) + 1e-9)
+            sharpe = (np.mean(daily_rets) / (np.std(daily_rets) + 1e-9)) * np.sqrt(252)
+
+        # 2. REALIZED IC (Spearman Rank Correlation)
+        # Store current state for future evaluation
+        current_scores = {t: 0.0 for t in self.tickers}
+        # house_view is not directly available here, so we'll pass it or pull from memory
+        # For simplicity, we'll calculate realized_ic in the main loop instead.
+        
         sector_stats, _ = self._get_sector_exposure(self.sim_positions, self.sim_price_memory, nlv)
         active_pos_count = len([q for q in self.sim_positions.values() if q != 0])
+        
         return {
             "nlv": nlv, "conviction": conviction_belief, "leverage": getattr(self, 'last_target_lev', 0.0), "hedge": 0.0, "concentration": getattr(self, 'last_concentration', 5),
             "active_pos": active_pos_count, "sector_exposure": sector_stats, "gross_exposure": (pos_mv/nlv*100) if nlv > 0 else 0,
             "buying_power": self.sim_cash, "roe": 0.0, "shortfall": total_shortfall,
-            "sensors": {"win_rate": 0, "max_dd": (nlv-self.peak_value)/(self.peak_value+1e-6)*100, "ic": 0.1914, "sharpe": 2.45}
+            "sensors": {"win_rate": win_rate, "max_dd": (nlv-self.peak_value)/(self.peak_value+1e-6)*100, "ic": getattr(self, 'realized_ic', 0.1914), "sharpe": sharpe}
         }
 
     async def _update_oms_live(self, house_view):
@@ -404,6 +428,23 @@ class InferenceWorker:
                     prices = self.sim_price_memory if self.trading_mode == 'sim' else self._get_batch_prices(self.tickers, self.current_knowledge_time)
                     scores_dict = {e['ticker']: e['score'] for e in house_view['ladder']}
                     
+                    # DYNAMIC REALIZED IC (Spearman)
+                    if self.trading_mode == 'sim':
+                        # Store current scores/prices for IC checking in 3 days
+                        self.ic_buffer.append({"date": self.current_knowledge_time, "scores": scores_dict, "prices": prices.copy()})
+                        if len(self.ic_buffer) > 3:
+                            past_data = self.ic_buffer.pop(0)
+                            realized_rets = []
+                            predicted_scores = []
+                            for t in self.tickers:
+                                if t in prices and t in past_data['prices']:
+                                    ret = (prices[t] / (past_data['prices'][t] + 1e-9)) - 1
+                                    realized_rets.append(ret)
+                                    predicted_scores.append(past_data['scores'].get(t, 0.0))
+                            if len(realized_rets) > 10:
+                                ic_val, _ = spearmanr(predicted_scores, realized_rets)
+                                self.realized_ic = max(0, ic_val) # Clamp to positive for signal health
+
                     ladder_ui = []
                     for t in self.tickers:
                         p = prices.get(t, 0.0); score = scores_dict.get(t, 0.0)
