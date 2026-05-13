@@ -333,48 +333,97 @@ class InferenceWorker:
         }
 
     async def _update_oms_live(self, house_view):
+        now = datetime.now()
+        is_thinking_window = (now.hour == 16 and 5 <= now.minute <= 30) # 4:05 PM - 4:30 PM
+        is_execution_window = (now.hour == 15 and now.minute >= 50)   # 3:50 PM - 4:00 PM (MOC Window)
+
+        # 1. RECOVERY & TELEMETRY
+        pending_json = self.redis_client.get('uqts:live:pending_decision')
+        pending_decision = json.loads(pending_json) if pending_json else None
+        
+        # Hydrate State
         nlv, _ = await self.live_bot.hydrate_state()
         self.peak_value = max(self.peak_value, nlv)
-        prices = self._get_batch_prices(self.tickers, datetime.now())
+        prices = self._get_batch_prices(self.tickers, now)
         long_mv = sum(qty * prices.get(t, 0) for t, qty in self.live_bot.positions.items())
-        obs, conviction_belief = self._get_rl_observation(house_view['ladder'], nlv, nlv - long_mv, datetime.now(), 100000.0, self.peak_value, [], 0.0, 0.0, [])
-        
-        if self.rl_pilot:
-            act, _ = self.rl_pilot.predict(obs, deterministic=True)
-            should_reb = (act[2] > 0.7) or (datetime.now().weekday() == 0)
-            if should_reb:
-                target_lev = 1.0 if act[0] > 0.5 else 0.0
-                concentration = [5, 8, 12, 15][int(np.clip(act[1], 0, 3.99))]
-                self.last_target_lev_live = target_lev; self.last_concentration_live = concentration
-            else:
-                target_lev = getattr(self, 'last_target_lev_live', 1.0); concentration = getattr(self, 'last_concentration_live', 12)
-        else:
-            should_reb = (datetime.now().weekday() == 0); target_lev = 1.0; concentration = 12
 
-        if should_reb:
-            valid_ladder = [e for e in house_view['ladder'] if e['score'] > 0]
-            target_weights = self._calculate_target_weights(valid_ladder, concentration)
-            top_picks = list(target_weights.keys()); total_target_capital = nlv * target_lev
-            turnover_notional = 0.0
-            for ticker, qty in list(self.live_bot.positions.items()):
-                if ticker not in top_picks and ticker != "SPY" and qty > 0:
-                    turnover_notional += qty * prices.get(ticker, 0)
-                    self.live_bot.submit_order(ticker, "SELL", int(qty))
-            for ticker, w in target_weights.items():
-                curr_price = prices.get(ticker, 0)
-                if curr_price <= 0: continue
-                target_qty = int((total_target_capital * w) / curr_price); current_qty = self.live_bot.positions.get(ticker, 0); diff = target_qty - current_qty
-                if abs(diff) >= 1 and (current_qty == 0 or abs(diff) / (current_qty + 1e-6) > 0.15):
-                    turnover_notional += abs(diff) * curr_price; self.live_bot.submit_order(ticker, "BUY" if diff > 0 else "SELL", int(abs(diff)))
+        # --- PHASE A: THE THINKING WINDOW (PLANNING) ---
+        if is_thinking_window:
+            # Prevent redundant planning in the same window
+            last_plan_date = self.redis_client.get('uqts:live:last_plan_date')
+            today_str = now.strftime("%Y-%m-%d")
             
-            shortfall_val = turnover_notional * (0.0005 + np.random.uniform(0, 0.0002))
-            self.cumulative_fees += shortfall_val
-            self.last_shortfall_live = (shortfall_val / (nlv + 1e-6)) * 10000.0
+            if last_plan_date != today_str:
+                obs, conviction_belief = self._get_rl_observation(house_view['ladder'], nlv, nlv - long_mv, now, 100000.0, self.peak_value, [], 0.0, 0.0, [])
+                if self.rl_pilot:
+                    act, _ = self.rl_pilot.predict(obs, deterministic=True)
+                    target_lev = 1.0 if act[0] > 0.5 else 0.0
+                    concentration = [5, 8, 12, 15][int(np.clip(act[1], 0, 3.99))]
+                else:
+                    target_lev = 1.0; concentration = 12
 
+                # Store the frozen decision for tomorrow
+                decision = {
+                    "date": today_str,
+                    "target_lev": target_lev,
+                    "concentration": concentration,
+                    "ladder": house_view['ladder'][:concentration], # Store only needed picks
+                    "status": "QUEUED"
+                }
+                self.redis_client.set('uqts:live:pending_decision', json.dumps(decision))
+                self.redis_client.set('uqts:live:last_plan_date', today_str)
+                logger.success(f"🔮 [PLANNING] AI Decision Queued for tomorrow: Lev {target_lev}x | Conc {concentration}")
+
+        # --- PHASE B: THE EXECUTION WINDOW (MOC) ---
+        if is_execution_window and pending_decision:
+            today_str = now.strftime("%Y-%m-%d")
+            # Ensure we aren't executing a decision made TODAY (Wait for 24h lag)
+            if pending_decision['date'] != today_str:
+                logger.info(f"🚀 [EXECUTION] Routing MOC orders for buffered decision from {pending_decision['date']}...")
+                
+                target_lev = pending_decision['target_lev']
+                concentration = pending_decision['concentration']
+                target_weights = self._calculate_target_weights(pending_decision['ladder'], concentration)
+                top_picks = list(target_weights.keys())
+                total_target_capital = nlv * target_lev
+                
+                turnover_notional = 0.0
+                # Route Sells
+                for ticker, qty in list(self.live_bot.positions.items()):
+                    if ticker not in top_picks and ticker != "SPY" and qty > 0:
+                        turnover_notional += qty * prices.get(ticker, 0)
+                        self.live_bot.submit_order(ticker, "SELL", int(qty))
+                
+                # Route Buys
+                for ticker, w in target_weights.items():
+                    curr_price = prices.get(ticker, 0)
+                    if curr_price <= 0: continue
+                    target_qty = int((total_target_capital * w) / curr_price)
+                    current_qty = self.live_bot.positions.get(ticker, 0)
+                    diff = target_qty - current_qty
+                    if abs(diff) >= 1 and (current_qty == 0 or abs(diff) / (current_qty + 1e-6) > 0.15):
+                        turnover_notional += abs(diff) * curr_price
+                        self.live_bot.submit_order(ticker, "BUY" if diff > 0 else "SELL", int(abs(diff)))
+                
+                shortfall_val = turnover_notional * (0.0005 + np.random.uniform(0, 0.0002))
+                self.cumulative_fees += shortfall_val
+                self.last_shortfall_live = (shortfall_val / (nlv + 1e-6)) * 10000.0
+                
+                # Success: Clear the queue
+                self.redis_client.delete('uqts:live:pending_decision')
+                logger.success(f"✅ [EXECUTION] MOC Orders Dispatched.")
+
+        # --- PHASE C: CONTINUOUS TELEMETRY ---
+        # We still need to return stats to the UI even if not trading
+        obs, conviction_belief = self._get_rl_observation(house_view['ladder'], nlv, nlv - long_mv, now, 100000.0, self.peak_value, [], 0.0, 0.0, [])
         sector_stats, _ = self._get_sector_exposure(self.live_bot.positions, prices, nlv)
         active_pos_count = len([q for q in self.live_bot.positions.values() if q != 0])
+        
         return {
-            "nlv": nlv, "conviction": conviction_belief, "leverage": target_lev, "hedge": 0.0, "concentration": concentration,
+            "nlv": nlv, "conviction": conviction_belief, 
+            "leverage": pending_decision['target_lev'] if pending_decision else 0.0, 
+            "hedge": 0.0, 
+            "concentration": pending_decision['concentration'] if pending_decision else 5,
             "active_pos": active_pos_count, "sector_exposure": sector_stats, "gross_exposure": (long_mv/nlv*100) if nlv > 0 else 0,
             "buying_power": nlv-long_mv, "roe": 0.0, "shortfall": getattr(self, 'last_shortfall_live', 0.0), "cumulative_fees": self.cumulative_fees,
             "sensors": {"win_rate": 0, "max_dd": (nlv-self.peak_value)/(self.peak_value+1e-6)*100, "ic": 0.1914, "sharpe": 2.45}
@@ -478,7 +527,8 @@ class InferenceWorker:
                             "capital": float(stats['nlv']), "active_positions": int(stats['active_pos']), "gross_exposure": float(stats['gross_exposure']), "buying_power": float(stats['buying_power']),
                             "roe": float(stats['roe']), "sector_exposure": stats['sector_exposure'], "oms_queue": self.live_bot.oms_stats if self.live_bot else self.oms_queue, 
                             "order_log": self.live_bot.order_log[-10:] if self.live_bot else self.order_log[-10:],
-                            "trading_mode": self.trading_mode, "performance_history": self.performance_history
+                            "trading_mode": self.trading_mode, "performance_history": self.performance_history,
+                            "pending_decision": stats.get('pending_decision')
                         },
                         "execution": {"implementation_shortfall": float(stats['shortfall']), "cumulative_fees": float(self.cumulative_fees), "is_var": 0.0001, "slippage_heatmap": [[float(0.1 + (i*j*0.05) + np.random.random()*0.1) for j in range(5)] for i in range(5)]},
                         "pipeline": {"champion_sharpe": 1.15, "challenger_sharpe": float(stats['sensors']['sharpe'])},
