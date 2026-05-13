@@ -557,14 +557,20 @@ class InferenceWorker:
             if house_view['status'] == "OK":
                 if self.trading_mode == 'sim': stats = self._update_oms_sim(house_view)
                 else: stats = await self._update_oms_live(house_view)
+            else:
+                # Ferrari Robustness: Still calculate basic stats for UI even if AI rankings are missing
+                if self.trading_mode != 'sim':
+                    stats = await self._update_oms_live(house_view) # Will just check window/telemetry
+                else:
+                    stats = None
                 
-                if stats:
-                    # Robust Price & Score Lookup
-                    prices = self.sim_price_memory if self.trading_mode == 'sim' else self._get_batch_prices(self.tickers, self.current_knowledge_time)
-                    scores_dict = {e['ticker']: e['score'] for e in house_view['ladder']}
-                    
-                    # DYNAMIC REALIZED IC (Spearman)
-                    if self.trading_mode == 'sim':
+            if stats:
+                # Robust Price & Score Lookup
+                prices = self.sim_price_memory if self.trading_mode == 'sim' else self._get_batch_prices(self.tickers, self.current_knowledge_time)
+                scores_dict = {e['ticker']: e['score'] for e in house_view.get('ladder', [])}
+                
+                # DYNAMIC REALIZED IC (Spearman)
+                if self.trading_mode == 'sim':
                         # Store current scores/prices for IC checking in 3 days
                         self.ic_buffer.append({"date": self.current_knowledge_time, "scores": scores_dict, "prices": prices.copy()})
                         if len(self.ic_buffer) > 3:
