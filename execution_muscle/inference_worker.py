@@ -638,12 +638,9 @@ class InferenceWorker:
             
             if self.trading_mode == 'sim': 
                 self.current_knowledge_time += timedelta(days=1)
-                # RESET SIMULATION IF DATA EXHAUSTED ( Ferrari Auto-Loop )
                 if self.current_knowledge_time > datetime.now():
-                    logger.info("🔄 SIMULATION COMPLETE. RESETTING HORIZON...")
-                    self.current_knowledge_time = datetime(2024, 1, 1, 16, 0, 0)
-                    self.performance_history = []
-                    self.alpha_history = []
+                    logger.success("🏁 SIMULATION COMPLETE. Final horizon reached.")
+                    self.is_killed = True
             
             await asyncio.sleep(self.update_interval)
 
