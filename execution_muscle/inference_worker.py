@@ -112,9 +112,24 @@ class InferenceWorker:
         self.order_log = []; self.total_notional_traded = 0.0; self.cumulative_fees = 0.0
         self.sim_price_memory = {}; self.last_target_lev = None; self.last_concentration = None
         self.is_initialized = False; self.spy_start_p = None; self.sim_signal_queue = None
-        self.ic_buffer = [] # To store (date, scores_dict, prices_at_T) for Realized IC
+        # EFFICIENCY: ic_buffer is a rolling 3-element window; deque gives O(1) eviction.
+        from collections import deque
+        self.ic_buffer = deque(maxlen=4)  # keep at most 4; we use the oldest at len > 3
         self.alpha_history = [] # Ferrari O(1) buffer for alpha velocity
         self.realized_ic = 0.0 # Start from clean slate
+
+        # EFFICIENCY: cache for live inference. The T+1 strategy only changes
+        # answers once per day, but the UI refresh tick runs every second.
+        # Re-running the TFT every second wastes >99% of inference cycles.
+        # Caching keyed on (date, tickers-tuple) lets us return the same
+        # house_view until the day rolls over.
+        self._house_view_cache_key = None
+        self._house_view_cache = None
+
+        # Per-tick memo for _calculate_target_weights — same inputs are computed
+        # twice in _update_oms_sim (planning then execution).
+        self._tw_cache_key = None
+        self._tw_cache_val = None
         
         self.live_bot = None
         if self.trading_mode in ['paper', 'live']:
@@ -153,7 +168,10 @@ class InferenceWorker:
                 if saved_belief: self.strategy.meta_controller.belief = float(saved_belief)
                 
                 saved_ic_buffer = self.redis_client.get('uqts:live:ic_buffer')
-                if saved_ic_buffer: self.ic_buffer = json.loads(saved_ic_buffer)
+                if saved_ic_buffer:
+                    # ic_buffer is a deque; rehydrate by extending (preserves maxlen).
+                    self.ic_buffer.clear()
+                    self.ic_buffer.extend(json.loads(saved_ic_buffer))
 
                 logger.info(f"🏎️ STATE RECOVERED: {len(self.performance_history)} days of history found.")
             except Exception as e:
@@ -177,26 +195,80 @@ class InferenceWorker:
             logger.info("INFERENCE WORKER: Pre-computing Daily Rankings for Simulation (2024-2026)...")
             end_date = datetime.now()
             steps = self.strategy.lab.walk_forward(self.tickers, start_date, end_date, stride=1)
-            
+
             self.sim_rankings_cache = {}
             logger.info(f"INFERENCE WORKER: Computing AI Scores for {len(steps)} steps...")
+
+            # EFFICIENCY (Fix #11): mega-batch many days into a single forward
+            # pass to amortize per-call launch overhead. With hidden_dim=32 the
+            # model is launch-bound, not compute-bound, so this is typically a
+            # 5-10x speedup over the per-step loop.
+            from research_lab.alpha_universe import MultiModalBatch
+            device = next(self.strategy.model.parameters()).device
+            chunk_size = 32
+
             with torch.no_grad():
-                device = next(self.strategy.model.parameters()).device
-                for step in tqdm(steps, desc="AI Ranking Cache"):
-                    dt_key = step['date'].strftime("%Y-%m-%d")
-                    batch = step['batch'].to(device)
-                    out_tensor = self.strategy.model(batch)
-                    scores = out_tensor[:, 1].cpu().numpy()
-                    
-                    ladder = []
-                    for i, t in enumerate(batch.tickers):
-                        ladder.append({
-                            "ticker": t,
-                            "score": float(scores[i]),
-                            "price": float(batch.data['raw_price'][i].item())
-                        })
-                    ladder.sort(key=lambda x: x['score'], reverse=True)
-                    self.sim_rankings_cache[dt_key] = {"ladder": ladder, "status": "OK"}
+                for chunk_start in tqdm(range(0, len(steps), chunk_size), desc="AI Ranking Cache"):
+                    chunk = steps[chunk_start:chunk_start + chunk_size]
+                    if not chunk:
+                        continue
+
+                    ref_keys = set(chunk[0]['batch'].data.keys())
+                    compatible = all(set(s['batch'].data.keys()) == ref_keys for s in chunk)
+
+                    if not compatible:
+                        # Heterogeneous batches: fall back to per-step.
+                        for step in chunk:
+                            dt_key = step['date'].strftime("%Y-%m-%d")
+                            batch = step['batch'].to(device)
+                            out_tensor = self.strategy.model(batch)
+                            scores = out_tensor[:, 1].cpu().numpy()
+                            ladder = [
+                                {"ticker": t, "score": float(scores[i]),
+                                 "price": float(batch.data['raw_price'][i].item())}
+                                for i, t in enumerate(batch.tickers)
+                            ]
+                            ladder.sort(key=lambda x: x['score'], reverse=True)
+                            self.sim_rankings_cache[dt_key] = {"ladder": ladder, "status": "OK"}
+                        continue
+
+                    # Concatenate sample axis across the whole chunk.
+                    stacked = {}
+                    offsets = [0]
+                    tickers_by_step = []
+                    prices_by_step = []
+                    for s in chunk:
+                        b = s['batch'].to(device)
+                        n_i = len(b.tickers)
+                        offsets.append(offsets[-1] + n_i)
+                        tickers_by_step.append(b.tickers)
+                        prices_by_step.append(
+                            [float(b.data['raw_price'][i].item()) for i in range(n_i)]
+                        )
+                        for k, v in b.data.items():
+                            stacked.setdefault(k, []).append(v)
+                    big = {k: torch.cat(vs, dim=0) for k, vs in stacked.items()}
+
+                    mega = MultiModalBatch(
+                        data=big,
+                        labels=torch.zeros(offsets[-1], device=device),
+                        tickers=[t for tl in tickers_by_step for t in tl],
+                        times=[],
+                    )
+                    out = self.strategy.model(mega)
+                    all_scores = out[:, 1].cpu().numpy()
+
+                    for i, step in enumerate(chunk):
+                        dt_key = step['date'].strftime("%Y-%m-%d")
+                        lo, hi = offsets[i], offsets[i + 1]
+                        s_slice = all_scores[lo:hi]
+                        ladder = [
+                            {"ticker": t, "score": float(s_slice[j]), "price": prices_by_step[i][j]}
+                            for j, t in enumerate(tickers_by_step[i])
+                        ]
+                        ladder.sort(key=lambda x: x['score'], reverse=True)
+                        self.sim_rankings_cache[dt_key] = {"ladder": ladder, "status": "OK"}
+
             logger.info(f"✅ INFERENCE WORKER: Ranking Cache Ready ({len(self.sim_rankings_cache)} days).")
 
         self.is_initialized = True
@@ -521,34 +593,36 @@ class InferenceWorker:
         return stats, total_long_mv
 
     def _calculate_target_weights(self, valid_ladder, concentration):
+        """
+        Allocation weights for the top-`concentration` entries of the ladder,
+        with temperature softmax and per-asset cap.
+
+        EFFICIENCY: memoized within a tick. Both the planning and execution
+        branches of _update_oms_sim call this with identical inputs.
+        """
+        # Build a cache key from the ladder identity. The ladder is rebuilt
+        # each tick from the house_view, so its id() is stable within a tick.
+        cache_key = (id(valid_ladder), int(concentration))
+        if self._tw_cache_key == cache_key:
+            return self._tw_cache_val
+
         top_entries = valid_ladder[:concentration]
-        # Professional High-Density Allocation: Temperature control via config
         temp = self.config.get('execution_muscle', {}).get('allocation_temperature', 0.5)
         asset_cap = self.config.get('execution_muscle', {}).get('max_single_asset_cap', 0.15)
-        
+
         top_scores = np.array([e['score'] for e in top_entries]) * 100.0
         exp_scores = np.exp((top_scores - np.max(top_scores)) / temp)
         weights = exp_scores / (np.sum(exp_scores) + 1e-9)
-        
-        # Enforce safety cap and redistribute if needed (Institutional Safety)
+
         if np.max(weights) > asset_cap:
             weights = np.clip(weights, 0, asset_cap)
             weights = weights / np.sum(weights)
-            
-        return {top_entries[i]['ticker']: float(weights[i]) for i in range(len(top_entries))}
 
-    def _get_batch_prices(self, tickers, as_of):
-        if self.trading_mode != 'sim' and self.live_bot:
-            try:
-                headers = {"APCA-API-KEY-ID": self.live_bot.api_key, "APCA-API-SECRET-KEY": self.live_bot.api_secret}
-                url = f"https://data.alpaca.markets/v2/stocks/trades/latest?symbols={','.join(tickers)}"
-                resp = requests.get(url, headers=headers)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    prices = {t: float(d['p']) for t, d in data.get('trades', {}).items()}
-                    if prices: return prices
-            except Exception as e:
-                logger.warning(f"Live Price Fetch Failed ({e}), falling back to local DB.")
+        result = {top_entries[i]['ticker']: float(weights[i]) for i in range(len(top_entries))}
+        self._tw_cache_key = cache_key
+        self._tw_cache_val = result
+        return result
+
     def _get_batch_prices(self, tickers, as_of):
         if self.trading_mode != 'sim' and self.live_bot:
             try:
@@ -577,13 +651,29 @@ class InferenceWorker:
         while not self.is_killed:
             tick += 1
             if not self.is_initialized: await asyncio.sleep(1); continue
-            if self.trading_mode != 'sim': 
+            if self.trading_mode != 'sim':
                 self.current_knowledge_time = datetime.now()
-                house_view = self.strategy.get_current_rankings(as_of=self.current_knowledge_time, include_batch=True)
+                # EFFICIENCY (Fix #6): cache the house_view by date. The strategy
+                # is T+1 daily — the answer only changes on a day rollover, but
+                # the UI loop runs at update_interval_ms (~1 Hz). Re-running the
+                # full TFT every second wastes >99% of inference cycles.
+                date_key = self.current_knowledge_time.strftime("%Y-%m-%d")
+                if self._house_view_cache_key != date_key or self._house_view_cache is None:
+                    house_view = self.strategy.get_current_rankings(
+                        as_of=self.current_knowledge_time, include_batch=True
+                    )
+                    self._house_view_cache_key = date_key
+                    self._house_view_cache = house_view
+                else:
+                    house_view = self._house_view_cache
             else:
                 if self.current_knowledge_time.weekday() >= 5: self.current_knowledge_time += timedelta(days=1); continue
                 dt_key = self.current_knowledge_time.strftime("%Y-%m-%d")
                 house_view = self.sim_rankings_cache.get(dt_key, {"status": "DATA_MISSING", "ladder": []})
+
+            # Reset per-tick target_weights memo (Fix #14)
+            self._tw_cache_key = None
+            self._tw_cache_val = None
 
             if house_view['status'] == "OK":
                 if self.trading_mode == 'sim': stats = self._update_oms_sim(house_view)
@@ -597,7 +687,8 @@ class InferenceWorker:
                 scores_dict = {e['ticker']: e['score'] for e in house_view.get('ladder', [])}
                 self.ic_buffer.append({"date": self.current_knowledge_time, "scores": scores_dict, "prices": prices.copy()})
                 if len(self.ic_buffer) > 3:
-                    past_data = self.ic_buffer.pop(0)
+                    # deque.popleft is O(1) vs list.pop(0) which is O(n).
+                    past_data = self.ic_buffer.popleft()
                     realized_rets, pred_scores = [], []
                     for t in self.tickers:
                         if t in prices and t in past_data['prices']:
@@ -618,7 +709,10 @@ class InferenceWorker:
 
                 focused = self.redis_client.get('uqts:focused_ticker')
                 if focused:
-                    diag = self.strategy.get_ticker_diagnostics(focused, as_of=self.current_knowledge_time)
+                    # Pass the cached house_view so diagnostics don't re-run inference.
+                    diag = self.strategy.get_ticker_diagnostics(
+                        focused, as_of=self.current_knowledge_time, house_view=house_view
+                    )
                     if diag:
                         pld = {"type": "SPECTRAL_UPDATE", "spectral": {"ticker": focused, "history": diag['history'], "cwt": diag['cwt'], "adf_p_value": diag['adf_p'], "shap_values": diag['shap_fusion']}}
                         self.redis_client.publish(f'uqts:spectral:{focused}', json.dumps(pld, cls=NumpyEncoder))
@@ -631,11 +725,16 @@ class InferenceWorker:
                 self.alpha_history.append({"time": timestamp_str, "alpha": ((float(stats['nlv'])/100000.0)-(float(spy_cap)/100000.0))*100.0})
 
                 if self.trading_mode != 'sim' and tick % 10 == 0:
-                    self.redis_client.set('uqts:live:performance_history', json.dumps(self.performance_history))
-                    self.redis_client.set('uqts:live:alpha_history', json.dumps(self.alpha_history))
-                    self.redis_client.set('uqts:live:cumulative_fees', self.cumulative_fees)
-                    self.redis_client.set('uqts:live:bayesian_belief', self.strategy.meta_controller.belief)
-                    self.redis_client.set('uqts:live:ic_buffer', json.dumps(self.ic_buffer, cls=NumpyEncoder))
+                    # EFFICIENCY (Fix #15): bundle Redis state SETs into a single
+                    # pipeline round-trip instead of 5 sequential network calls.
+                    # ic_buffer is a deque; serialize as a list.
+                    pipe = self.redis_client.pipeline()
+                    pipe.set('uqts:live:performance_history', json.dumps(self.performance_history))
+                    pipe.set('uqts:live:alpha_history', json.dumps(self.alpha_history))
+                    pipe.set('uqts:live:cumulative_fees', self.cumulative_fees)
+                    pipe.set('uqts:live:bayesian_belief', self.strategy.meta_controller.belief)
+                    pipe.set('uqts:live:ic_buffer', json.dumps(list(self.ic_buffer), cls=NumpyEncoder))
+                    pipe.execute()
 
                 payload = {
                     "timestamp": self.current_knowledge_time.strftime("%Y-%m-%d %H:%M:%S"),

@@ -242,42 +242,73 @@ class SniperRanker(nn.Module):
         
         ns = len(dataset.labels)
         nb = max(1, ns // batch_size)
-        
+
         logger.info(f"SniperRanker: Training on {ns} samples over {epochs} epochs...")
-        
+
+        # EFFICIENCY: move training and validation data to the target device ONCE
+        # before the epoch loop. The original code did v[idx].to(device) inside
+        # every mini-batch AND val_dataset.to(device) every epoch:
+        #   - (ns / batch_size) * epochs CPU->GPU transfers for training data
+        #   - epochs CPU->GPU transfers for the val set
+        # With a ~78K sample training set and batch_size=512, that is up to
+        # ~15,000 redundant transfers per run. Moving once upfront eliminates
+        # all of them. Falls back to per-batch transfer on OOM.
+        train_on_device = None
+        labels_on_device = None
+        if device.type != 'cpu':
+            try:
+                train_on_device  = {k: v.to(device, non_blocking=True) for k, v in dataset.data.items()}
+                labels_on_device = dataset.labels.to(device, non_blocking=True)
+                logger.info(f"SniperRanker: Training data pinned to {device}.")
+            except RuntimeError as e:
+                logger.warning(f"SniperRanker: Cannot pin training data to {device} ({e}). "
+                               "Falling back to per-batch transfer.")
+                train_on_device  = None
+                labels_on_device = None
+
+        val_on_device = None
+        if val_dataset is not None and device.type != 'cpu':
+            try:
+                val_on_device = val_dataset.to(device)
+            except RuntimeError:
+                val_on_device = None
+
         best_val_ic = -float('inf')
         patience_counter = 0
         best_model_state = None
-        
+
         for epoch in range(epochs):
             self.train()
             trl = 0
             perm = torch.randperm(ns)
-            
+
             for b in range(nb):
                 optimizer.zero_grad(set_to_none=True)
-                idx = perm[b*batch_size:(b+1)*batch_size]
-                if len(idx) < 2: continue
-                
-                batch_data = {k: v[idx].to(device) for k, v in dataset.data.items()}
-                batch_labels = dataset.labels[idx].to(device).unsqueeze(1)
-                
+                idx = perm[b * batch_size:(b + 1) * batch_size]
+                if len(idx) < 2:
+                    continue
+
+                if train_on_device is not None:
+                    batch_data   = {k: v[idx] for k, v in train_on_device.items()}
+                    batch_labels = labels_on_device[idx].unsqueeze(1)
+                else:
+                    batch_data   = {k: v[idx].to(device) for k, v in dataset.data.items()}
+                    batch_labels = dataset.labels[idx].to(device).unsqueeze(1)
+
                 batch_obj = MultiModalBatch(data=batch_data, labels=batch_labels, tickers=[], times=[])
-                
-                preds = self.forward(batch_obj)
-                loss = self.criterion(preds, batch_labels)
-                
+                preds     = self.forward(batch_obj)
+                loss      = self.criterion(preds, batch_labels)
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.parameters(), 1.0)
                 optimizer.step()
                 trl += loss.item()
-            
+
             if val_dataset:
                 self.eval()
                 with torch.no_grad():
-                    v_batch = val_dataset.to(device)
+                    v_batch = val_on_device if val_on_device is not None else val_dataset.to(device)
                     v_preds = self.forward(v_batch)
-                    v_loss = self.criterion(v_preds, val_dataset.labels.to(device).unsqueeze(1))
+                    v_loss  = self.criterion(v_preds, v_batch.labels.unsqueeze(1))
                     
                     from scipy.stats import spearmanr
                     ic = spearmanr(v_preds[:, 1].cpu().numpy(), val_dataset.labels.cpu().numpy())[0]

@@ -15,6 +15,7 @@ from stable_baselines3.common.callbacks import CheckpointCallback
 sys.path.append(os.getcwd())
 
 from alpha_factory.rl_environment import PortfolioGym
+from alpha_factory.meta_controller import BayesianMetaController
 from qts_core.logger import logger
 
 def make_env(rankings_df, prices_df, vols_df, spy_df, seed=42, rank=0):
@@ -23,7 +24,12 @@ def make_env(rankings_df, prices_df, vols_df, spy_df, seed=42, rank=0):
         random.seed(seed + rank)
         np.random.seed(seed + rank)
         torch.manual_seed(seed + rank)
-        env = PortfolioGym(rankings_df, prices_df, vols_df, spy_df)
+        
+        # SENIOR FIX (Priority 2): Instantiate real MetaController so the agent
+        # "feels" model drift during training.
+        mc = BayesianMetaController(prior_belief=0.75)
+        
+        env = PortfolioGym(rankings_df, prices_df, vols_df, spy_df, meta_controller=mc)
         env.reset(seed=seed + rank)
         return env
     return _init
@@ -62,8 +68,10 @@ def train_rl_pilot(total_timesteps=2000000, seed=42, n_envs=None, resume=False):
     
     # 3. Initialize Agent
     n_steps = 2048   
-    batch_size = 64 
+    # EFFICIENCY (Fix #12): Using 128 for finer policy updates during fine-tuning.
+    batch_size = 128 
     
+    current_steps = 0
     if resume:
         checkpoints = glob.glob("./models/rl_checkpoints/rl_pilot_v7_4_survivor_*.zip")
         if not checkpoints:
@@ -72,6 +80,8 @@ def train_rl_pilot(total_timesteps=2000000, seed=42, n_envs=None, resume=False):
         latest_checkpoint = max(checkpoints, key=os.path.getctime)
         logger.info(f"🔄 Resuming from checkpoint: {latest_checkpoint}")
         model = PPO.load(latest_checkpoint, env=env, verbose=1, device="cpu")
+        current_steps = model.num_timesteps
+        logger.info(f"📈 Loaded model has already seen {current_steps:,} steps.")
     else:
         model = PPO(
             "MlpPolicy", 
@@ -84,13 +94,13 @@ def train_rl_pilot(total_timesteps=2000000, seed=42, n_envs=None, resume=False):
             gamma=0.99,
             gae_lambda=0.95,
             clip_range=0.2,
-            ent_coef=0.01,
+            ent_coef=0.001,
             device="cpu",
             seed=seed
         )
     
     # 4. Train
-    logger.info(f"📊 Training for {total_timesteps} steps...")
+    logger.info(f"📊 Training for {total_timesteps:,} additional steps...")
     
     checkpoint_callback = CheckpointCallback(
         save_freq=max(1, 100000 // n_envs), 

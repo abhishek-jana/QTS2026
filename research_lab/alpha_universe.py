@@ -218,27 +218,43 @@ class AlphaUniverse:
         self.precomputed_labels = self.labeler.generate_labels(all_history, horizon_days=self.horizon, timeframe=self.timeframe)
         
         # PRE-COMPUTE ALL MODALITIES AT ONCE PER TICKER
+        # EFFICIENCY: store (sorted_ns_array, stacked_tensor) instead of
+        # {date: tensor} dicts. This eliminates 540K Python hash lookups and
+        # O(N) linear fallback scans during batch assembly. Alignment is done
+        # once per ticker with a single np.searchsorted over all walk-forward
+        # dates, replacing the per-day, per-ticker date resolution loop.
         logger.info(f"⚡ Vectorizing plugin transforms across full time-series...")
-        precomputed_features = {}
-        precomputed_prices = {}
+
+        def _ts_ns(ts) -> np.int64:
+            """pd.Timestamp or datetime → int64 nanoseconds."""
+            return np.int64(pd.Timestamp(ts).value)
+
+        precomputed_features = {}  # {ticker: {p_name: (sorted_ns_int64, stacked_tensor)}}
+        precomputed_prices   = {}  # {ticker: (sorted_ns_int64, close_float32)}
+
         for ticker in tqdm(universe, desc="Pre-computing Features"):
             ticker_data = all_history[all_history['ticker'] == ticker]
-            if len(ticker_data) < self.lookback: continue
-            
-            # Store raw prices for sim engine
-            valid_dates = ticker_data.index[self.lookback-1:]
-            precomputed_prices[ticker] = {date: ticker_data.loc[date, 'close'] for date in valid_dates}
-            
+            if len(ticker_data) < self.lookback:
+                continue
+
+            valid_dates = ticker_data.index[self.lookback - 1:]          # pd.DatetimeIndex
+            valid_ns    = np.array([_ts_ns(d) for d in valid_dates], dtype=np.int64)
+
+            # Raw prices: numpy array aligned to valid_dates
+            close_vals = ticker_data.loc[valid_dates, 'close'].values.astype(np.float32)
+            precomputed_prices[ticker] = (valid_ns, close_vals)
+
             ticker_features = {}
             for p in self.plugins:
                 try:
-                    tensor_data = p.transform(ticker_data, self.lookback)
+                    tensor_data = p.transform(ticker_data, self.lookback)  # (N, *shape)
                     if len(tensor_data) == len(valid_dates):
-                        ticker_features[p.name] = {date: tensor_data[i] for i, date in enumerate(valid_dates)}
+                        # Keep the full stacked tensor; don't build a dict of slices.
+                        ticker_features[p.name] = (valid_ns, tensor_data)
                 except Exception as e:
                     logger.debug(f"Plugin {p.name} failed for {ticker}: {e}")
             precomputed_features[ticker] = ticker_features
-            
+
         del all_history; gc.collect()
 
         # Generate walk-forward dates (Daily at 16:00 EST)
@@ -247,64 +263,186 @@ class AlphaUniverse:
         while curr <= end_date.replace(hour=16, minute=0, second=0, microsecond=0):
             if curr.weekday() < 5: dates.append(curr)
             curr += timedelta(days=stride)
-            
-        logger.info("📦 Assembling Multi-Modal Batches...")
-        for d in tqdm(dates, desc="🏗️ Building Sniper Batches"):
-            fused_data = {}
-            y_list, final_tickers, final_times = [], [], []
-            
-            for ticker in universe:
-                if ticker not in precomputed_features: continue
-                ticker_feats = precomputed_features[ticker]
-                
-                # We need features exactly 'as_of' this date, or the closest prior valid date
-                if d in ticker_feats.get('x_static', {}):
-                    actual_as_of = d
+
+        logger.info("📦 Pre-aligning tickers to walk-forward dates...")
+        # EFFICIENCY: one np.searchsorted call per ticker covers all D dates at once.
+        # This replaces 540K Python dict lookups and O(N) linear fallback scans
+        # with O(T * log D) vectorised alignment, then O(1) tensor indexing per
+        # (day, ticker, plugin) during assembly.
+
+        wf_ns = np.array([pd.Timestamp(d).value for d in dates], dtype=np.int64)
+        three_day_ns = np.int64(3 * 24 * 3600 * int(1e9))
+        plugin_names = [p.name for p in self.plugins]          # built once
+        p_key_map = {
+            p.name: (f"x_static_{p.name}" if p.name == "x_static" else f"x_past_{p.name}")
+            for p in self.plugins
+        }
+
+        # Pre-align labels: {ticker: (sorted_ns_int64, values_float32)}
+        aligned_labels: dict = {}
+        for col in self.precomputed_labels.columns:
+            s = self.precomputed_labels[col].dropna()
+            if s.empty:
+                continue
+            lns = np.array([pd.Timestamp(d).value for d in s.index], dtype=np.int64)
+            aligned_labels[col] = (lns, s.values.astype(np.float32))
+
+        # Pre-compute per-ticker alignment: one searchsorted over all D dates.
+        ticker_info: dict = {}
+        for ticker in universe:
+            t_feats = precomputed_features.get(ticker)
+            if not t_feats:
+                continue
+            ref_p = "x_static" if "x_static" in t_feats else next(iter(t_feats), None)
+            if ref_p is None:
+                continue
+            ref_ns, _ = t_feats[ref_p]
+
+            idxs      = np.searchsorted(ref_ns, wf_ns, side="right") - 1   # (D,)
+            safe_idxs = np.maximum(idxs, 0)
+            date_diff  = wf_ns - ref_ns[safe_idxs]
+            date_valid = (idxs >= 0) & (date_diff <= three_day_ns)
+            actual_ns  = np.where(date_valid, ref_ns[safe_idxs], np.int64(0))
+
+            label_out   = np.full(len(dates), np.nan, dtype=np.float32)
+            label_valid = np.zeros(len(dates), dtype=bool)
+            if ticker in aligned_labels:
+                lbl_ns, lbl_vals = aligned_labels[ticker]
+                for d_i in np.where(date_valid)[0]:
+                    li = int(np.searchsorted(lbl_ns, actual_ns[d_i], side="left"))
+                    if li < len(lbl_ns) and lbl_ns[li] == actual_ns[d_i]:
+                        v = lbl_vals[li]
+                        if not np.isnan(v):
+                            label_out[d_i]   = v
+                            label_valid[d_i] = True
+
+            plugin_ok = date_valid.copy()
+            p_idx_map: dict = {}
+            for p_name in plugin_names:
+                if p_name not in t_feats:
+                    plugin_ok[:] = False
+                    break
+                p_ns, _ = t_feats[p_name]
+                if np.array_equal(p_ns, ref_ns):
+                    p_idx_map[p_name] = safe_idxs
                 else:
-                    # Find closest prior
-                    valid_dates = [dt for dt in ticker_feats.get('x_static', {}).keys() if dt <= d]
-                    if not valid_dates: continue
-                    actual_as_of = max(valid_dates)
-                    
-                    if (d - actual_as_of).days > 3: continue
-                
-                ticker_labels = self.precomputed_labels[ticker] if ticker in self.precomputed_labels.columns else pd.Series(dtype=float)
-                label_val = ticker_labels.get(actual_as_of, np.nan)
-                if np.isnan(label_val): continue
-                
-                valid_sample = True
-                for p_name in [p.name for p in self.plugins]:
-                    if p_name not in ticker_feats or actual_as_of not in ticker_feats[p_name]:
-                        valid_sample = False; break
-                if not valid_sample: continue
+                    pi = np.searchsorted(p_ns, actual_ns, side="left")
+                    pi = np.minimum(pi, len(p_ns) - 1)
+                    plugin_ok[p_ns[pi] != actual_ns] = False
+                    p_idx_map[p_name] = pi
 
-                # Add raw price for sim engine
-                if 'raw_price' not in fused_data: fused_data['raw_price'] = []
-                fused_data['raw_price'].append(torch.tensor(float(precomputed_prices[ticker][actual_as_of])))
+            ticker_info[ticker] = {
+                "feat_idx":  safe_idxs,
+                "actual_ns": actual_ns,
+                "label_val": label_out,
+                "valid":     date_valid & label_valid & plugin_ok,
+                "p_idx":     p_idx_map,
+            }
 
-                for p_name in [p.name for p in self.plugins]:
-                    tensor = ticker_feats[p_name][actual_as_of]
-                    if p_name == 'x_static':
-                        f_key = f"x_static_{p_name}"
-                        if f_key not in fused_data: fused_data[f_key] = []
-                        fused_data[f_key].append(tensor)
-                    else:
-                        f_key = f"x_past_{p_name}"
-                        if f_key not in fused_data: fused_data[f_key] = []
-                        fused_data[f_key].append(tensor)
-                
-                y_list.append(label_val)
-                final_tickers.append(ticker)
-                final_times.append(actual_as_of)
-                
-            if final_tickers:
-                batch = MultiModalBatch(
-                    data={name: torch.stack(tensors) for name, tensors in fused_data.items()}, 
-                    labels=torch.tensor(np.array(y_list)).float(), 
-                    tickers=final_tickers, 
-                    times=final_times
+        # EFFICIENCY: instead of building each day's batch from Python lists with
+        # D × T × P iterations + torch.stack, we pre-build a (D, T, *shape)
+        # tensor grid for each modality once, then the assembly loop is a single
+        # boolean-index slice per day — no Python loops over tickers at all.
+        logger.info("📦 Building tensor grid for fast assembly...")
+
+        D = len(dates)
+        T = len(universe)
+        ticker_to_idx = {t: i for i, t in enumerate(universe)}
+
+        # Determine feature shapes from the first valid ticker
+        ref_shapes: dict = {}
+        for t in universe:
+            tf = precomputed_features.get(t)
+            if not tf:
+                continue
+            for p_name in plugin_names:
+                if p_name in tf and p_name not in ref_shapes:
+                    ref_shapes[p_name] = tf[p_name][1].shape[1:]  # (*shape)
+            if len(ref_shapes) == len(plugin_names):
+                break
+
+        # Allocate grids
+        valid_grid = np.zeros((D, T), dtype=bool)
+        label_grid = np.full((D, T), np.nan, dtype=np.float32)
+        price_grid = np.zeros((D, T), dtype=np.float32)
+        feat_grids: dict = {}
+        for p_name in plugin_names:
+            if p_name not in ref_shapes:
+                continue
+            f_key = p_key_map[p_name]
+            feat_grids[f_key] = torch.zeros(D, T, *ref_shapes[p_name])
+
+        # Fill grids per ticker (each ticker touches only its valid rows)
+        for ticker in universe:
+            ti = ticker_info.get(ticker)
+            if ti is None:
+                continue
+            t_i = ticker_to_idx[ticker]
+            valid_days = np.where(ti["valid"])[0]
+            if len(valid_days) == 0:
+                continue
+
+            valid_grid[valid_days, t_i] = True
+            label_grid[valid_days, t_i] = ti["label_val"][valid_days]
+
+            # Prices
+            if ticker in precomputed_prices:
+                pr_ns, pr_arr = precomputed_prices[ticker]
+                actual_ns_v    = ti["actual_ns"][valid_days]
+                pr_idxs        = np.minimum(
+                    np.searchsorted(pr_ns, actual_ns_v, side="left"), len(pr_ns) - 1
                 )
-                results.append({'date': d, 'batch': batch})
+                match = pr_ns[pr_idxs] == actual_ns_v
+                price_grid[valid_days[match], t_i] = pr_arr[pr_idxs[match]]
+
+            # Features — one advanced-index assign per (ticker, modality)
+            for p_name in plugin_names:
+                f_key = p_key_map.get(p_name)
+                if f_key not in feat_grids:
+                    continue
+                if p_name not in precomputed_features.get(ticker, {}):
+                    continue
+                _, p_tensors = precomputed_features[ticker][p_name]
+                p_idxs = ti["p_idx"][p_name][valid_days]
+                vd_t   = torch.from_numpy(valid_days.astype(np.int64))
+                feat_grids[f_key][vd_t, t_i] = p_tensors[p_idxs]
+
+        del precomputed_features, precomputed_prices
+        gc.collect()
+
+        # Times grid (only needed for valid entries)
+        times_grid = np.zeros((D, T), dtype=np.int64)
+        for ticker in universe:
+            ti = ticker_info.get(ticker)
+            if ti is None:
+                continue
+            t_i = ticker_to_idx[ticker]
+            valid_days = np.where(ti["valid"])[0]
+            times_grid[valid_days, t_i] = ti["actual_ns"][valid_days]
+
+        logger.info("📦 Assembling Multi-Modal Batches...")
+        for d_i, d in enumerate(tqdm(dates, desc="🏗️ Building Sniper Batches")):
+            valid_ts = np.where(valid_grid[d_i])[0]
+            if len(valid_ts) == 0:
+                continue
+
+            batch_tickers = [universe[t_i] for t_i in valid_ts]
+            vt_tensor     = torch.from_numpy(valid_ts.astype(np.int64))
+
+            batch_data: dict = {}
+            # price: (T_valid,) — direct index into pre-built grid
+            batch_data["raw_price"] = torch.from_numpy(price_grid[d_i, valid_ts])
+            # features: (T_valid, *shape) — one slice per modality, no ticker loop
+            for f_key, grid in feat_grids.items():
+                batch_data[f_key] = grid[d_i, vt_tensor]
+
+            batch = MultiModalBatch(
+                data=batch_data,
+                labels=torch.from_numpy(label_grid[d_i, valid_ts]),
+                tickers=batch_tickers,
+                times=[pd.Timestamp(int(times_grid[d_i, t_i])) for t_i in valid_ts],
+            )
+            results.append({"date": d, "batch": batch})
                 
         logger.success(f"✅ Fast Sniper Dataset Built: {len(results)} days.")
         

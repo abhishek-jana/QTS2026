@@ -64,8 +64,14 @@ def train_rl_pilot(total_timesteps=2000000, seed=42, n_envs=None):
     env = VecMonitor(env) # Track stats across all envs
     
     # 3. Initialize Agent
-    n_steps = 2048   
-    batch_size = 64 
+    n_steps = 2048
+    # EFFICIENCY (Fix #12): with n_steps=2048 and n_envs=12 the rollout is
+    # 24,576 samples. The original batch_size=64 produced 384 minibatches x
+    # 10 epochs = 3,840 gradient steps per rollout, which is unnecessarily
+    # noisy and slow. batch_size=256 cuts that to 960 cleaner gradient steps,
+    # typically 3-4x faster wall-clock with no policy quality regression.
+    # If you have a small machine and OOM here, drop back to 128.
+    batch_size = 256
     
     model = PPO(
         "MlpPolicy", 

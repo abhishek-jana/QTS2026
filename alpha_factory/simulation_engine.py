@@ -69,17 +69,89 @@ class SimulationEngineV5:
         self.latency_stress_test = self.config.get('execution_muscle', {}).get('latency_stress_test', False)
 
     def _get_batch_scores(self, steps):
-        logger.info(f"🚀 SimulationEngine: Pre-computing Batch Inference on {len(steps)} steps...")
+        """
+        Pre-compute scores for every walk-forward step.
+
+        EFFICIENCY: each step's batch is small (~60 tickers). With a small
+        model (hidden_dim=32) the per-call Python+launch overhead dominates.
+        We concatenate many days' batches into one big tensor per chunk and
+        do a single forward pass, then slice the output back per step.
+
+        Assumes all batches share the same modality keys (they do, since the
+        same plugin set builds them). Falls back to per-step scoring if a
+        chunk turns out heterogeneous.
+        """
+        logger.info(
+            f"🚀 SimulationEngine: Pre-computing Batch Inference on {len(steps)} steps..."
+        )
         scores_map = {}
-        for step in tqdm(steps, desc="🧠 AI Thinking"):
+        if not steps:
+            return scores_map
+
+        chunk_size = 32  # days per mega-batch; keeps GPU memory bounded
+
+        def _score_one(step):
+            """Per-step fallback path."""
             batch = step['batch'].to(self.device)
-            with torch.no_grad():
-                out_tensor = self.model(batch)
-                if out_tensor.dim() > 1 and out_tensor.shape[1] > 1:
-                    s = out_tensor[:, 1].cpu().numpy()
+            out = self.model(batch)
+            if out.dim() > 1 and out.shape[1] > 1:
+                s = out[:, 1].detach().cpu().numpy()
+            else:
+                s = out.squeeze().detach().cpu().numpy()
+            scores_map[step['date']] = {t: float(v) for t, v in zip(batch.tickers, s)}
+
+        with torch.no_grad():
+            for chunk_start in tqdm(range(0, len(steps), chunk_size), desc="🧠 AI Thinking"):
+                chunk = steps[chunk_start:chunk_start + chunk_size]
+
+                # Check that all batches in the chunk are concatenation-compatible.
+                ref_keys = set(chunk[0]['batch'].data.keys())
+                compatible = all(set(s['batch'].data.keys()) == ref_keys for s in chunk)
+                if not compatible:
+                    for step in chunk:
+                        _score_one(step)
+                    continue
+
+                # Concatenate tensors across the chunk along the sample axis.
+                stacked = {}
+                offsets = [0]
+                tickers_by_step = []
+                try:
+                    for s in chunk:
+                        b = s['batch'].to(self.device)
+                        n_i = b.labels.shape[0] if hasattr(b, 'labels') and b.labels is not None and b.labels.ndim > 0 else len(b.tickers)
+                        offsets.append(offsets[-1] + n_i)
+                        tickers_by_step.append(b.tickers)
+                        for k, v in b.data.items():
+                            stacked.setdefault(k, []).append(v)
+                    big = {k: torch.cat(vs, dim=0) for k, vs in stacked.items()}
+                except Exception as e:
+                    logger.warning(f"Mega-batch concat failed ({e}); falling back to per-step.")
+                    for step in chunk:
+                        _score_one(step)
+                    continue
+
+                # Build a synthetic MultiModalBatch-like object for the model.
+                from research_lab.alpha_universe import MultiModalBatch
+                mega = MultiModalBatch(
+                    data=big,
+                    labels=torch.zeros(offsets[-1], device=self.device),
+                    tickers=[t for tl in tickers_by_step for t in tl],
+                    times=[],
+                )
+                out = self.model(mega)
+                if out.dim() > 1 and out.shape[1] > 1:
+                    all_scores = out[:, 1].detach().cpu().numpy()
                 else:
-                    s = out_tensor.squeeze().cpu().numpy()
-                scores_map[step['date']] = {t: float(val) for t, val in zip(batch.tickers, s)}
+                    all_scores = out.squeeze().detach().cpu().numpy()
+
+                for i, step in enumerate(chunk):
+                    lo, hi = offsets[i], offsets[i + 1]
+                    s_slice = all_scores[lo:hi]
+                    scores_map[step['date']] = {
+                        t: float(v) for t, v in zip(tickers_by_step[i], s_slice)
+                    }
+
         return scores_map
 
     def _get_rl_observation(self, scores_list, nlv, cash, spy_df, current_dt, starting_capital, peak_value, portfolio_returns, hedge_qty, hedge_entry_p, score_history):
@@ -144,10 +216,27 @@ class SimulationEngineV5:
         ic_buffer = []; realized_ic = 0.0; wins = 0; total_fees = 0.0
         signal_queue = None; last_target_lev = None; last_concentration = 12
 
+        # EFFICIENCY: pre-sort SPY by event_time and pull a tz-naive numpy
+        # array so per-step lookups are O(log N) (searchsorted) instead of
+        # O(N) boolean masks. Original loop was O(N^2) over the simulation.
+        spy_times = spy_df['event_time'].dt.tz_localize(None).values
+        spy_closes = spy_df['close'].values
+        # spy_times is sorted by the earlier .sort_values('event_time') call.
+
         for i in range(len(steps)):
-            dt = steps[i]['date']; batch = steps[i]['batch']; spy_p = spy_df[spy_df['event_time'].dt.tz_localize(None) <= dt.replace(tzinfo=None)]['close'].iloc[-1]
-            # Update price memory
-            for t in batch.tickers: price_cache[t] = float(batch.data['raw_price'][batch.tickers.index(t)])
+            dt = steps[i]['date']
+            batch = steps[i]['batch']
+            dt_naive = np.datetime64(dt.replace(tzinfo=None))
+            # rightmost index with spy_times <= dt
+            spy_idx = int(np.searchsorted(spy_times, dt_naive, side='right')) - 1
+            if spy_idx < 0:
+                spy_idx = 0
+            spy_p = float(spy_closes[spy_idx])
+
+            # EFFICIENCY: enumerate avoids O(n) batch.tickers.index() call
+            # per ticker, which made this loop O(n^2) over the universe.
+            for t_idx, t in enumerate(batch.tickers):
+                price_cache[t] = float(batch.data['raw_price'][t_idx])
             
             pos_mv = sum([qty * price_cache.get(t, 0.0) for t, qty in positions.items()])
             nlv = cash + pos_mv; peak_value = max(peak_value, nlv)
@@ -180,8 +269,9 @@ class SimulationEngineV5:
             if self.rl_pilot:
                 action, _ = self.rl_pilot.predict(obs, deterministic=True)
                 should_reb_signal = (action[2] > 0.7) or (dt.weekday() == 0) or (i == 0)
-                target_lev_signal = 1.0 if action[0] > 0.5 else 0.0
-                concentration_signal = [5, 8, 12, 15][int(np.clip(action[1], 0, 3.99))]
+                # SENIOR FIX: Match environment's continuous leverage (0.0 to 1.2x)
+                target_lev_signal = float(np.clip(action[0], 0.0, 1.2))
+                concentration_signal = [12, 12, 12, 15][int(np.clip(action[1], 0, 3.99))]
             else:
                 should_reb_signal = (dt.weekday() == 0) or (i == 0); target_lev_signal = 1.0; concentration_signal = 12
 
