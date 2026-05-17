@@ -55,10 +55,10 @@ class PortfolioGym(gym.Env):
 
         self.initial_capital = 100000.0
 
-        # Action Space: [Risk Toggle, Concentration Index, Execution Trigger]
+        # Action Space: [Leverage (0-1.2), Concentration Index, Execution Trigger]
         self.action_space = spaces.Box(
             low=np.array([0.0, 0.0, 0.0], dtype=np.float32),
-            high=np.array([1.0, 3.0, 1.0], dtype=np.float32),
+            high=np.array([1.2, 3.0, 1.0], dtype=np.float32),
             dtype=np.float32,
         )
 
@@ -172,30 +172,16 @@ class PortfolioGym(gym.Env):
         if not np.all(np.isfinite(action)):
             leverage_action, concentration_idx, exec_trigger = 1.0, 1.0, 0.0
 
-        # SENIOR FIX (Metacognition): Update MetaController with realized returns
-        # from the previous step so the agent learns to react to model drift.
-        if self.current_step > 0 and self.meta_controller is not None:
-            prev_prices = self.prices_np[self.current_step - 1]
-            curr_prices = self.prices_np[self.current_step]
-            # Zero-safe returns
-            realized_rets = np.where(prev_prices > 1e-6, (curr_prices / prev_prices) - 1.0, 0.0)
-            # Scores that were used for the previous step's observation
-            prev_scores = self.rankings_np[self.current_step - 1]
-            self.meta_controller.update_belief(realized_rets, prev_scores)
-
-        current_dt = self.dates[self.current_step]
-        should_rebalance = (exec_trigger > 0.7) or (current_dt.weekday() == 0)
-
-        if should_rebalance:
-            # SENIOR FIX (Continuous): Allow agent to scale leverage up to 1.2x
-            self.last_target_lev = float(np.clip(leverage_action, 0.0, 1.2))
-            # Floor concentration at 12 to cap idiosyncratic risk
-            self.last_n_stocks = [12, 12, 12, 15][int(np.clip(concentration_idx, 0, 3.99))]
-
+        # -------------------------------------------------------------------
+        # 1. MARK-TO-MARKET (ADVANCE TO TODAY'S REALITY)
+        # Advance prices to the current step (t). These prices represent the
+        # reality at the end of the step, after the positions decided in the
+        # *previous* step have been held.
+        # -------------------------------------------------------------------
         current_prices = self.prices_np[self.current_step]
-        # Fast numpy lookup instead of self.spy.iloc[self.current_step]['close']
         spy_price = float(self.spy_close_np[self.current_step])
 
+        # Value of positions decided YESTERDAY (at t-1) marked at TODAY'S prices
         pos_mv = sum(
             qty * current_prices[t_idx] for t_idx, qty in self.positions.items()
         )
@@ -204,8 +190,66 @@ class PortfolioGym(gym.Env):
         )
         self.peak_value = max(self.peak_value, self.account_value)
 
+        # -------------------------------------------------------------------
+        # 2. COMPUTE REWARD FROM REALIZED RETURN
+        # Reward is based on how the allocation from (t-1) performed at (t).
+        # -------------------------------------------------------------------
+        reward = 0.0
         turnover_notional = 0.0
+        if self.current_step > 5:
+            prev_acc = self.account_history[-1]
+            prev_spy = self.spy_history[-1]
+            agent_ret_1d = (self.account_value / (prev_acc + 1e-6)) - 1.0
+            spy_ret_1d = (spy_price / (prev_spy + 1e-6)) - 1.0
+
+            current_lev = pos_mv / (self.account_value + 1e-6)
+            vol_vel = self.spy_vol_velocity[self.current_step]
+
+            # --- ABSOLUTE ALPHA (Unconditional) ---
+            alpha_1d = agent_ret_1d - spy_ret_1d
+            reward += float(alpha_1d) * 3000.0
+
+            # --- SMOOTH ABSOLUTE BLEED PENALTY ---
+            loss_mag = max(0.0, -float(agent_ret_1d))
+            reward -= (loss_mag * loss_mag) * 2500.0
+
+            # --- SMART SIGNAL GATE ---
+            top_conviction = np.mean(np.sort(self.rankings_np[self.current_step])[-5:])
+            is_signal_failing = (vol_vel > 0.0003) and (top_conviction < 0.008)
+
+            if is_signal_failing:
+                if exec_trigger > 0.5:
+                    reward -= 2.0
+                if current_lev > 0.1:
+                    reward -= current_lev * 5.0
+
+            if (
+                current_lev < 0.10
+                and top_conviction > 0.015
+                and not is_signal_failing
+                and spy_ret_1d > 0
+            ):
+                reward -= 2.5
+
+        # -------------------------------------------------------------------
+        # 3. CHOOSE ALLOCATION FOR THE NEXT INTERVAL (TODAY -> TOMORROW)
+        # -------------------------------------------------------------------
+        current_dt = self.dates[self.current_step]
+        should_rebalance = (exec_trigger > 0.7) or (current_dt.weekday() == 0)
+
         if should_rebalance:
+            # SENIOR FIX (Metacognition): Update MetaController so belief sensor is live
+            if self.meta_controller is not None:
+                prev_scores = self.rankings_np[self.current_step - 1] if self.current_step > 0 else self.rankings_np[0]
+                prev_prices = self.prices_np[self.current_step - 1] if self.current_step > 0 else self.prices_np[0]
+                real_rets_for_mc = np.where(prev_prices > 1e-6, (current_prices / prev_prices) - 1.0, 0.0)
+                self.meta_controller.update_belief(real_rets_for_mc, prev_scores)
+
+            # Continuous leverage mapping
+            self.last_target_lev = float(np.clip(leverage_action, 0.0, 1.2))
+            # HIGH-OCTANE FIX: Allow agent to concentrate down to 5 stocks
+            self.last_n_stocks = [5, 10, 15, 20][int(np.clip(concentration_idx, 0, 3.99))]
+
             scores = self.rankings_np[self.current_step]
             top_k_indices = np.argsort(scores)[-self.last_n_stocks:][::-1]
 
@@ -235,56 +279,19 @@ class PortfolioGym(gym.Env):
                     new_positions[t_idx] = t_qty
                 else:
                     new_positions[t_idx] = c_qty
+            
             self.positions = new_positions
-            self.account_value -= turnover_notional * 0.0005
+            # Turnover tax applies to TODAY'S rebalance, deducted from account value
+            reb_cost = turnover_notional * 0.0005
+            self.account_value -= reb_cost
+            if self.current_step > 5:
+                reward -= (turnover_notional / (self.account_value + 1e-6)) * 5.0
 
         pos_mv_now = sum(q * current_prices[t] for t, q in self.positions.items())
         self.cash = self.account_value - pos_mv_now
+        
         self.account_history.append(self.account_value)
         self.spy_history.append(spy_price)
-
-        # SHIELD & SWORD REWARD
-        reward = 0.0
-        if self.current_step > 5:
-            prev_acc = self.account_history[self.current_step - 1]
-            prev_spy = self.spy_history[self.current_step - 1]
-            agent_ret_1d = (self.account_value / (prev_acc + 1e-6)) - 1.0
-            spy_ret_1d = (spy_price / (prev_spy + 1e-6)) - 1.0
-
-            current_lev = pos_mv_now / (self.account_value + 1e-6)
-            vol_vel = self.spy_vol_velocity[self.current_step]
-
-            # --- ABSOLUTE ALPHA (Unconditional) ---
-            alpha_1d = agent_ret_1d - spy_ret_1d
-            reward += float(alpha_1d) * 3000.0
-
-            # --- SMOOTH ABSOLUTE BLEED PENALTY ---
-            # Replaces the original step function at -1% with a continuous
-            # quadratic: no discontinuity, naturally grows from zero.
-            loss_mag = max(0.0, -float(agent_ret_1d))
-            reward -= (loss_mag * loss_mag) * 2500.0
-
-            # --- SMART SIGNAL GATE (Survivor V3) ---
-            top_conviction = np.mean(np.sort(self.rankings_np[self.current_step])[-5:])
-            is_signal_failing = (vol_vel > 0.0003) and (top_conviction < 0.008)
-
-            if is_signal_failing:
-                if exec_trigger > 0.5:
-                    reward -= 2.0
-                if current_lev > 0.1:
-                    reward -= current_lev * 5.0
-
-            if (
-                current_lev < 0.10
-                and top_conviction > 0.015
-                and not is_signal_failing
-                and spy_ret_1d > 0
-            ):
-                # SENIOR FIX: Heavier penalty for sitting in cash during rallies
-                reward -= 2.5
-
-            # SENIOR FIX: Balanced turnover tax (5.0) for active alpha hunting
-            reward -= (turnover_notional / (self.account_value + 1e-6)) * 5.0
 
         self.current_step += 1
         done = (

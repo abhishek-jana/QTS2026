@@ -40,6 +40,10 @@ def precompute_rl_data():
     # Create strategy engine to load the model and universe
     strategy = StrategyEngine(data_provider=DataEngine(storage_path=db_path, read_only=True), config_path="config.yaml")
     
+    # SENIOR FIX (Optimization): Pre-compute scores using the highly efficient mega-batch
+    # path from the InferenceWorker, vastly accelerating generation.
+    logger.info("⚡ Pre-computing AI Scores via Mega-Batch Inference...")
+    
     tf = config['model_pipeline']['timeframes']
     
     def parse_date(d_str):
@@ -51,38 +55,69 @@ def precompute_rl_data():
     
     logger.info(f"RL Pre-compute: Targeting window {start_date.date()} -> {end_date.date()}")
     
-    # OPTIMIZATION: Use walk_forward to get pre-computed batches instantly
+    # Use walk_forward to get pre-computed batches
     steps = strategy.lab.walk_forward(universe=tickers, start_date=start_date, end_date=end_date, stride=1)
     
     if not steps:
         logger.error("❌ No steps returned from walk_forward.")
         return
 
+    device = next(strategy.model.parameters()).device
+    chunk_size = 32
+    scores_map = {}
+
+    with torch.no_grad():
+        for chunk_start in tqdm(range(0, len(steps), chunk_size), desc="🧠 Batch Processing"):
+            chunk = steps[chunk_start:chunk_start + chunk_size]
+            
+            # Check for modality compatibility
+            ref_keys = set(chunk[0]['batch'].data.keys())
+            compatible = all(set(s['batch'].data.keys()) == ref_keys for s in chunk)
+
+            if not compatible:
+                for step in chunk:
+                    batch = step['batch'].to(device)
+                    out = strategy.model(batch)
+                    scores = out[:, 1].cpu().numpy()
+                    scores_map[step['date']] = {t: float(scores[i]) for i, t in enumerate(batch.tickers)}
+                continue
+
+            stacked = {}
+            offsets = [0]
+            tickers_by_step = []
+            for s in chunk:
+                b = s['batch'].to(device)
+                n_i = len(b.tickers)
+                offsets.append(offsets[-1] + n_i)
+                tickers_by_step.append(b.tickers)
+                for k, v in b.data.items():
+                    stacked.setdefault(k, []).append(v)
+            
+            big_data = {k: torch.cat(vs, dim=0) for k, vs in stacked.items()}
+            from research_lab.alpha_universe import MultiModalBatch
+            mega = MultiModalBatch(data=big_data, labels=torch.zeros(offsets[-1], device=device), tickers=[t for tl in tickers_by_step for t in tl], times=[])
+            
+            out = strategy.model(mega)
+            all_scores = out[:, 1].cpu().numpy()
+
+            for i, step in enumerate(chunk):
+                lo, hi = offsets[i], offsets[i + 1]
+                scores_map[step['date']] = {t: float(v) for t, v in zip(tickers_by_step[i], all_scores[lo:hi])}
+
     rankings_list = []
     prices_list = []
     vols_list = []
     
-    device = next(strategy.model.parameters()).device
+    logger.info(f"Finalizing {len(steps)} data rows...")
     
-    logger.info(f"Computing {len(steps)} rebalance snapshots via cached batches...")
-    
-    for step in tqdm(steps):
+    for step in steps:
         dt = step['date']
-        batch = step['batch'].to(device)
+        batch = step['batch']
+        scores_for_dt = scores_map.get(dt, {})
         
-        with torch.no_grad():
-            tft_inputs = {
-                'static': {k.replace('x_static_', ''): v for k, v in batch.data.items() if k.startswith('x_static_')},
-                'past': {k.replace('x_past_', ''): v for k, v in batch.data.items() if k.startswith('x_past_')}
-            }
-            # Predict
-            out_dict = strategy.model.model(tft_inputs)
-            # Use median quantile (index 1) for ranking
-            scores = out_dict['out'][:, 1].cpu().numpy()
-            
-        scores_map = {t: float(scores[i]) if i < len(scores) else 0.0 for i, t in enumerate(batch.tickers)}
-        scores_map['date'] = dt
-        rankings_list.append(scores_map)
+        row = scores_for_dt.copy()
+        row['date'] = dt
+        rankings_list.append(row)
         
         price_row = {'date': dt}
         vol_row = {'date': dt}

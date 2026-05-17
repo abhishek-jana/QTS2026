@@ -46,7 +46,7 @@ class StrategyEngine:
 
         # 1. AlphaUniverse (Plugins are auto-discovered by the Registry)
         self.lab = AlphaUniverse(conn=self.data_provider.conn, config=self.config)
-        self.lab.labeler = AlphaLabeler(mode='directional')
+        self.lab.labeler = AlphaLabeler(mode='residual')
 
         # 2. Ingestor
         self.ingestor = InstitutionalIngestor(self.data_provider, config=self.config)
