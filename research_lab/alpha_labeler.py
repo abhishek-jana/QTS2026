@@ -58,3 +58,9 @@ class AlphaLabeler:
         outperformance relative to the 60-stock universe.
         """
         return df.apply(lambda row: (row - row.mean()) / (row.std() + 1e-9), axis=1)
+
+    def apply_rank(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Applies cross-sectional ranking (0 to 1) for extreme stability.
+        """
+        return df.rank(axis=1, pct=True) - 0.5

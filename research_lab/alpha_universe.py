@@ -214,8 +214,14 @@ class AlphaUniverse:
             if col in all_history.columns:
                 all_history[col] = all_history.groupby('ticker')[col].ffill().bfill()
 
-        # Target: 3-day Residual Log-Returns
+        # Target: 5-day Residual Log-Returns
         self.precomputed_labels = self.labeler.generate_labels(all_history, horizon_days=self.horizon, timeframe=self.timeframe)
+        
+        # SENIOR FIX (Ranking): apply cross-sectional percentile ranking (-0.5 to 0.5) 
+        # so targets are perfectly uniform. This is the most stable target for 
+        # a ranking model and eliminates all volatility-linked noise.
+        logger.info("⚖️ AlphaUniverse: Normalizing targets across universe (Rank)...")
+        self.precomputed_labels = self.labeler.apply_rank(self.precomputed_labels)
         
         # PRE-COMPUTE ALL MODALITIES AT ONCE PER TICKER
         # EFFICIENCY: store (sorted_ns_array, stacked_tensor) instead of

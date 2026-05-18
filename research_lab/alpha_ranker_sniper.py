@@ -240,6 +240,13 @@ class SniperRanker(nn.Module):
         self.train()
         optimizer = torch.optim.Adam(self.parameters(), lr=lr)
         
+        # SENIOR FIX (Convergence): Use a scheduler to cool down the LR on plateaus.
+        # This helps the model "squeeze" the final alpha out of the noise.
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=5)
+        
+        # EFFICIENCY (AMP): Use Automatic Mixed Precision for 2-3x faster throughput
+        scaler = torch.amp.GradScaler('cuda') if device.type == 'cuda' else None
+        
         ns = len(dataset.labels)
         nb = max(1, ns // batch_size)
 
@@ -296,22 +303,43 @@ class SniperRanker(nn.Module):
                     batch_labels = dataset.labels[idx].to(device).unsqueeze(1)
 
                 batch_obj = MultiModalBatch(data=batch_data, labels=batch_labels, tickers=[], times=[])
-                preds     = self.forward(batch_obj)
-                loss      = self.criterion(preds, batch_labels)
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.parameters(), 1.0)
-                optimizer.step()
+                
+                if scaler:
+                    with torch.amp.autocast('cuda'):
+                        preds = self.forward(batch_obj)
+                        loss  = self.criterion(preds, batch_labels)
+                    scaler.scale(loss).backward()
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(self.parameters(), 1.0)
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    preds = self.forward(batch_obj)
+                    loss  = self.criterion(preds, batch_labels)
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(self.parameters(), 1.0)
+                    optimizer.step()
+
                 trl += loss.item()
 
             if val_dataset:
                 self.eval()
                 with torch.no_grad():
                     v_batch = val_on_device if val_on_device is not None else val_dataset.to(device)
-                    v_preds = self.forward(v_batch)
+                    # Run validation in AMP if available
+                    if device.type == 'cuda':
+                        with torch.amp.autocast('cuda'):
+                            v_preds = self.forward(v_batch)
+                    else:
+                        v_preds = self.forward(v_batch)
+                        
                     v_loss  = self.criterion(v_preds, v_batch.labels.unsqueeze(1))
                     
                     from scipy.stats import spearmanr
                     ic = spearmanr(v_preds[:, 1].cpu().numpy(), val_dataset.labels.cpu().numpy())[0]
+                
+                # Update scheduler based on Val IC
+                scheduler.step(ic)
                     
                 logger.info(f"   [Epoch {epoch+1}] Loss: {trl/nb:.4f} | Val Loss: {v_loss:.4f} | Val IC: {ic:.4f}")
                 

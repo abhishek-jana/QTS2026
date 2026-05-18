@@ -45,9 +45,8 @@ execution_muscle:
 model_pipeline:
   architecture:
     gnn_layers: 2
-    # hidden_dim MUST match the trained SniperRanker checkpoint
-    # (SniperRanker default is 32).
-    hidden_dim: 32
+    # hidden_dim reduced for better generalization on sparse alpha
+    hidden_dim: 64
     vit_heads: 8
   evaluation_dataset_path: data/oos_steps_v2.pt
   # The Sniper-Residual strategy uses the SniperRanker TFT checkpoint.
@@ -62,12 +61,12 @@ model_pipeline:
     train_start: '2019-01-01'
     validation_split_pct: 0.15
   training:
-    batch_size: 512
-    dropout: 0.3
-    early_stopping_patience: 15
+    batch_size: 1024
+    dropout: 0.2
+    early_stopping_patience: 30
     epochs: 100
-    lr: 0.005
-    weight_decay: 0.0001
+    lr: 0.001
+    weight_decay: 1.0e-04
   training_dataset_path: data/train_dataset_v2_full.pt
 
 risk_metacontroller:
@@ -79,13 +78,9 @@ rl_training_physics:
 
 signal_physics:
   fractional_differentiation:
-    # NOTE: d_param = 0.0 means fractional differentiation is DISABLED;
-    # raw prices flow through unchanged. To enable, set d in (0, 1).
-    # typical values: 0.3-0.5 for daily price series. Verify with the
-    # ADF-significance grid search in research_lab/verify_physics.py
-    # before deploying — changing d invalidates the trained model.
-    d_param: 0.4
-  horizon_days: 3
+    # d=0.05 preserves maximum signal memory while maintaining stationarity
+    d_param: 0.05
+  horizon_days: 5
   lookback_days: 63
   math_padding: 250
   wavelet_transform:

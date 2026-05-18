@@ -148,6 +148,8 @@ class BacktestOrchestrator:
         from execution_muscle.inference_worker import InferenceWorker
         
         worker = InferenceWorker()
+        worker.trading_mode = 'sim'  # Force sim mode for backtest
+        worker.rl_pilot = None       # SENIOR FIX: Ensure baseline is signal-only
         worker.initialize()
         
         # Sync the worker to use the model we just trained/loaded
@@ -174,7 +176,6 @@ class BacktestOrchestrator:
 
         # Inject fast paths
         worker.data_engine.get_pit_view = fast_get_pit_view
-        worker.sizer.data_engine.get_pit_view = fast_get_pit_view
         worker._get_latest_price_sim = fast_get_latest_price
         
         days_processed = 0
@@ -194,6 +195,11 @@ class BacktestOrchestrator:
             
             if house_view['status'] == 'OK':
                 stats = worker._update_oms_sim(house_view)
+                if stats is None:
+                    logger.warning(f"Sim step @ {worker.current_knowledge_time} failed to return stats (Mode: {worker.trading_mode}). Using previous NLV.")
+                    last_nlv = worker.performance_history[-1]['portfolio'] if worker.performance_history else 100000.0
+                    stats = {'nlv': last_nlv}
+
                 spy_p = worker._get_latest_price_sim('SPY')
                 if not hasattr(worker, 'spy_start_p'): worker.spy_start_p = spy_p
                 spy_cap = (spy_p / worker.spy_start_p) * 100000.0 if worker.spy_start_p > 0 else 100000.0

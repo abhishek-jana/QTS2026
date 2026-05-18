@@ -127,8 +127,14 @@ class WaveletFeatureGenerator:
         results = []
         with torch.no_grad():
             for filt in self._filters:
-                padding = filt.shape[-1] // 2
-                conv_res = F.conv1d(x, filt, padding=padding)
+                # SENIOR FIX (CAUSAL): instead of centered padding (look-ahead),
+                # we use left-padding (causal) so the output at index T only 
+                # depends on data from [T - width, T].
+                filter_width = filt.shape[-1]
+                # Pad only on the left side
+                x_padded = F.pad(x, (filter_width - 1, 0))
+                # Run convolution with no additional padding
+                conv_res = F.conv1d(x_padded, filt, padding=0)
                 results.append(conv_res.view(-1))
         spectrogram = torch.stack(results).cpu().numpy()
         return np.abs(spectrogram[:, :len(series)])
