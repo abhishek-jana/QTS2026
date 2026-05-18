@@ -55,10 +55,10 @@ class PortfolioGym(gym.Env):
 
         self.initial_capital = 100000.0
 
-        # Action Space: [Leverage (0-1.2), Concentration Index, Execution Trigger]
+        # Action Space: [Leverage (0-1.0), Concentration Index, Execution Trigger]
         self.action_space = spaces.Box(
             low=np.array([0.0, 0.0, 0.0], dtype=np.float32),
-            high=np.array([1.2, 3.0, 1.0], dtype=np.float32),
+            high=np.array([1.0, 3.0, 1.0], dtype=np.float32),
             dtype=np.float32,
         )
 
@@ -245,8 +245,8 @@ class PortfolioGym(gym.Env):
                 real_rets_for_mc = np.where(prev_prices > 1e-6, (current_prices / prev_prices) - 1.0, 0.0)
                 self.meta_controller.update_belief(real_rets_for_mc, prev_scores)
 
-            # Continuous leverage mapping
-            self.last_target_lev = float(np.clip(leverage_action, 0.0, 1.2))
+            # Continuous leverage mapping (Capped at 1.0 to prevent borrowing)
+            self.last_target_lev = float(np.clip(leverage_action, 0.0, 1.0))
             # HIGH-OCTANE FIX: Allow agent to concentrate down to 5 stocks
             self.last_n_stocks = [5, 10, 15, 20][int(np.clip(concentration_idx, 0, 3.99))]
 

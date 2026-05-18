@@ -70,7 +70,7 @@ class InferenceWorker:
             "JPM": "Financial", "V": "Financial", "MA": "Financial", "BAC": "Financial", 
             "WFC": "Financial", "BX": "Financial", "GS": "Financial", "MS": "Financial", "SPGI": "Financial",
             "AMZN": "Retail", "HD": "Retail", "PG": "Retail", "COST": "Retail", "PEP": "Retail", 
-            "KO": "Retail", "WMT": "Retail", "MCD": "McDonald's Corp.", "PM": "Philip Morris Int.", "LOW": "Lowe's Companies",
+            "KO": "Retail", "WMT": "Retail", "MCD": "Retail", "PM": "Retail", "LOW": "Retail",
             "TSLA": "Auto", "COP": "Energy", "LIN": "Materials",
             "GE": "Industrials", "UNP": "Industrials", "HON": "Industrials", "BA": "Industrials", 
             "CAT": "Industrials", "LMT": "Industrials", "RTX": "Industrials"
@@ -152,20 +152,27 @@ class InferenceWorker:
         if self.trading_mode != 'sim':
             # Try to recover state from Redis
             try:
+                def _safe_float(val, default=0.0):
+                    if val is None: return default
+                    try:
+                        # Handle potential "np.float64(value)" strings from prior bugs
+                        s_val = str(val).replace('np.float64(', '').replace(')', '')
+                        return float(s_val)
+                    except: return default
+
                 hist = self.redis_client.get('uqts:live:performance_history')
                 if hist: self.performance_history = json.loads(hist)
                 
                 a_hist = self.redis_client.get('uqts:live:alpha_history')
                 if a_hist: self.alpha_history = json.loads(a_hist)
                 
-                fees = self.redis_client.get('uqts:live:cumulative_fees')
-                if fees: self.cumulative_fees = float(fees)
+                self.cumulative_fees = _safe_float(self.redis_client.get('uqts:live:cumulative_fees'))
                 
                 saved_spy_p = self.redis_client.get('uqts:live:spy_start_p')
-                if saved_spy_p: self.spy_start_p = float(saved_spy_p)
+                if saved_spy_p: self.spy_start_p = _safe_float(saved_spy_p)
                 
                 saved_belief = self.redis_client.get('uqts:live:bayesian_belief')
-                if saved_belief: self.strategy.meta_controller.belief = float(saved_belief)
+                if saved_belief: self.strategy.meta_controller.belief = _safe_float(saved_belief, 0.75)
                 
                 saved_ic_buffer = self.redis_client.get('uqts:live:ic_buffer')
                 if saved_ic_buffer:
@@ -182,7 +189,7 @@ class InferenceWorker:
                 # Use current price if available, else latest historical
                 curr_prices = self._get_batch_prices(['SPY'], datetime.now())
                 self.spy_start_p = float(curr_prices.get('SPY', self.spy_df.iloc[-1]['close']))
-                self.redis_client.set('uqts:live:spy_start_p', self.spy_start_p)
+                self.redis_client.set('uqts:live:spy_start_p', float(self.spy_start_p))
                 logger.info(f"⚓ SPY ANCHOR SET: ${self.spy_start_p}")
         else:
             # Sim mode always uses fixed start
@@ -323,7 +330,13 @@ class InferenceWorker:
         return np.clip(np.nan_to_num(obs), -10.0, 10.0), conviction
 
     def _update_oms_sim(self, house_view):
-        if self.trading_mode != 'sim': return
+        if self.trading_mode != 'sim':
+            logger.warning(f"InferenceWorker: _update_oms_sim called while in {self.trading_mode} mode.")
+            return None
+        
+        # EFFICIENCY (Fix #14): Reset per-tick target_weights memo at start of step
+        self._tw_cache_key = None
+        self._tw_cache_val = None
         
         # Point-in-Time Price Memory
         for e in house_view['ladder']:
@@ -340,11 +353,15 @@ class InferenceWorker:
         if self.rl_pilot:
             act, _ = self.rl_pilot.predict(obs, deterministic=True)
             should_reb_signal = (act[2] > 0.7) or (self.current_knowledge_time.weekday() == 0) or is_first_step
-            target_lev_signal = 1.0 if act[0] > 0.5 else 0.0
-            concentration_signal = [5, 8, 12, 15][int(np.clip(act[1], 0, 3.99))]
+            # SENIOR FIX: Match environment's continuous leverage (0.0 to 1.0x)
+            target_lev_signal = float(np.clip(act[0], 0.0, 1.0))
+            # HIGH-OCTANE FIX: Allow agent to concentrate down to 5 stocks
+            concentration_signal = [5, 10, 15, 20][int(np.clip(act[1], 0, 3.99))]
         else:
             should_reb_signal = (self.current_knowledge_time.weekday() == 0) or is_first_step
-            target_lev_signal = 1.0; concentration_signal = 12
+            target_lev_signal = 1.0
+            # SENIOR FIX: Baseline (Brain) is hard-floored at 12 stocks for safety
+            concentration_signal = 12
 
         # ESTIMATE QUANTITIES FOR PLANNING
         target_notional = nlv * target_lev_signal
@@ -354,7 +371,14 @@ class InferenceWorker:
         for t, w in target_weights.items():
             p = self.sim_price_memory.get(t, 0)
             qty = int((target_notional * w) / p) if p > 0 else 0
-            picks_with_qty.append({"ticker": t, "qty": qty, "score": next(x['score'] for x in house_view['ladder'] if x['ticker'] == t)})
+            
+            # Robust score lookup to prevent StopIteration
+            score = 0.0
+            for x in house_view['ladder']:
+                if x['ticker'] == t:
+                    score = x['score']
+                    break
+            picks_with_qty.append({"ticker": t, "qty": qty, "score": score})
 
         current_decision = {
             "date": self.current_knowledge_time.strftime("%Y-%m-%d %H:%M"),
@@ -507,11 +531,11 @@ class InferenceWorker:
                 obs, _ = self._get_rl_observation(house_view['ladder'], nlv, nlv - long_mv, now, 100000.0, self.peak_value, [], 0.0, 0.0, [])
                 if self.rl_pilot:
                     act, _ = self.rl_pilot.predict(obs, deterministic=True)
-                    target_lev = 1.0 if act[0] > 0.5 else 0.0
-                    concentration = [5, 8, 12, 15][int(np.clip(act[1], 0, 3.99))]
+                    # SENIOR FIX: Cap leverage at 1.0 to prevent borrowing
+                    target_lev = float(np.clip(act[0], 0.0, 1.0))
+                    concentration = [5, 10, 15, 20][int(np.clip(act[1], 0, 3.99))]
                 else:
                     target_lev = 1.0; concentration = 12
-
                 target_notional = nlv * target_lev
                 target_weights = self._calculate_target_weights(house_view['ladder'], concentration)
                 picks_with_qty = []
@@ -588,7 +612,9 @@ class InferenceWorker:
         stats = {s: {"exposure": 0.0, "count": 0, "avg_score": 0.0} for s in self.canonical_sectors}
         total_long_mv = 0.0
         for t, q in positions.items():
-            s = self.sector_map.get(t, "Other"); p = prices.get(t, 0.0); mv = q * p
+            s = self.sector_map.get(t, "Other")
+            if s not in stats: s = "Other"
+            p = prices.get(t, 0.0); mv = q * p
             stats[s]["exposure"] += (mv / (nlv + 1e-6) * 100); stats[s]["count"] += 1; total_long_mv += mv
         return stats, total_long_mv
 
@@ -722,7 +748,13 @@ class InferenceWorker:
                 gain_pct = (stats['nlv'] / 100000.0 - 1) * 100.0
                 timestamp_str = self.current_knowledge_time.strftime("%Y-%m-%d")
                 self.performance_history.append({"time": timestamp_str, "portfolio": float(stats['nlv']), "spy": float(spy_cap)})
+                # SENIOR FIX (Fix #16): Cap performance history to avoid payload bloat
+                if len(self.performance_history) > 250:
+                    self.performance_history.pop(0)
+                
                 self.alpha_history.append({"time": timestamp_str, "alpha": ((float(stats['nlv'])/100000.0)-(float(spy_cap)/100000.0))*100.0})
+                if len(self.alpha_history) > 250:
+                    self.alpha_history.pop(0)
 
                 if self.trading_mode != 'sim' and tick % 10 == 0:
                     # EFFICIENCY (Fix #15): bundle Redis state SETs into a single
@@ -731,8 +763,8 @@ class InferenceWorker:
                     pipe = self.redis_client.pipeline()
                     pipe.set('uqts:live:performance_history', json.dumps(self.performance_history))
                     pipe.set('uqts:live:alpha_history', json.dumps(self.alpha_history))
-                    pipe.set('uqts:live:cumulative_fees', self.cumulative_fees)
-                    pipe.set('uqts:live:bayesian_belief', self.strategy.meta_controller.belief)
+                    pipe.set('uqts:live:cumulative_fees', float(self.cumulative_fees))
+                    pipe.set('uqts:live:bayesian_belief', float(self.strategy.meta_controller.belief))
                     pipe.set('uqts:live:ic_buffer', json.dumps(list(self.ic_buffer), cls=NumpyEncoder))
                     pipe.execute()
 
@@ -741,7 +773,7 @@ class InferenceWorker:
                     "market_status": "OPEN" if self._is_market_open(self.current_knowledge_time) else "CLOSED",
                     "metacognition": {"policy_conviction": float(stats['conviction']), "rl_leverage": float(stats['leverage']), "rl_hedge": 0.0, "concentration": int(stats['concentration']), "strategy_sensors": stats['sensors'], "alpha_gain": self.alpha_history},
                     "institutional": {"capital": float(stats['nlv']), "active_positions": int(stats['active_pos']), "gross_exposure": float(stats['gross_exposure']), "buying_power": float(stats['buying_power']), "roe": float(stats['roe']), "sector_exposure": stats['sector_exposure'], "oms_queue": self.live_bot.oms_stats if self.live_bot else self.oms_queue, "order_log": self.live_bot.order_log[-10:] if self.live_bot else self.order_log[-10:], "trading_mode": self.trading_mode, "performance_history": self.performance_history, "pending_decision": stats.get('pending_decision')},
-                    "execution": {"implementation_shortfall": float(stats['shortfall']), "cumulative_fees": float(self.cumulative_fees), "is_var": 0.0001, "slippage_heatmap": [[float(min(1.0, stats['shortfall']*0.1 + np.random.random()*0.1)) for _ in range(5)] for _ in range(5)]},
+                    "execution": {"implementation_shortfall": float(stats['shortfall']), "cumulative_fees": float(self.cumulative_fees), "is_var": 0.0001, "slippage_heatmap": [[float(min(1.0, (stats['shortfall']/100.0) * (i+j)/10.0)) for j in range(5)] for i in range(5)]},
                     "pipeline": {"champion_sharpe": 1.15, "challenger_sharpe": float(stats['sensors']['sharpe'])},
                     "rankings": {"ladder": ladder_ui}, "type": "GLOBAL_UPDATE"
                 }
