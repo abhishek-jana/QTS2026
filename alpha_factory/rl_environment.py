@@ -95,10 +95,11 @@ class PortfolioGym(gym.Env):
 
         # Adversarial Training: Pre-generate signal corruption mask
         self.signal_corruption_mask = np.ones(len(self.dates))
-        num_corrupt_chunks = np.random.randint(2, 5)
+        # SENIOR FIX: Dial back paranoia. 1-2 chunks of 5 days instead of 2-5 chunks of 10.
+        num_corrupt_chunks = np.random.randint(1, 3)
         for _ in range(num_corrupt_chunks):
-            start = np.random.randint(0, len(self.dates) - 20)
-            self.signal_corruption_mask[start:start+10] = 0.0
+            start = np.random.randint(0, len(self.dates) - 10)
+            self.signal_corruption_mask[start:start+5] = 0.0
 
         return self._get_obs(), {}
 
@@ -179,8 +180,6 @@ class PortfolioGym(gym.Env):
             vol_vel = self.spy_vol_velocity[self.current_step]
 
             reward += float(agent_ret_1d - spy_ret_1d) * 3000.0
-            loss_mag = max(0.0, -float(agent_ret_1d))
-            reward -= (loss_mag * loss_mag) * 2500.0
 
             top_conviction = np.mean(np.sort(self.rankings_np[self.current_step])[-5:])
             is_signal_failing = (vol_vel > 0.0003) and (top_conviction < 0.008)
@@ -188,6 +187,11 @@ class PortfolioGym(gym.Env):
             if is_signal_failing:
                 if exec_trigger > 0.5: reward -= 2.0
                 if current_lev_ratio > 0.1: reward -= current_lev_ratio * 5.0
+            else:
+                # SENIOR FIX: "Opportunity Cost". If signal is good, market is normal, 
+                # and agent is sitting in cash, strongly penalize it.
+                if current_lev_ratio < 0.8:
+                    reward -= (0.8 - current_lev_ratio) * 10.0
             
             if self.steps_since_rebalance > 20:
                 reward -= (self.steps_since_rebalance - 20) * 0.1
