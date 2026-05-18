@@ -82,6 +82,7 @@ signal_physics:
     d_param: 0.05
   horizon_days: 5
   lookback_days: 63
+  label_mode: directional
   math_padding: 250
   wavelet_transform:
     scales:

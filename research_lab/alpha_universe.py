@@ -36,10 +36,15 @@ class AlphaUniverse:
     def __init__(self, conn, plugins: List = None, config: dict = None):
         from research_lab.plugins.core_plugins import ModalityRegistry
         from research_lab.alpha_core import DiurnalStandardizer
+        from research_lab.alpha_labeler import AlphaLabeler
         
         self._conn = conn
-        self.labeler = None 
         self.config = config or {}
+        
+        # SENIOR FIX: Use label_mode from config instead of defaulting to None
+        label_mode = self.config.get('signal_physics', {}).get('label_mode', 'directional')
+        self.labeler = AlphaLabeler(mode=label_mode)
+
         self.db_path = self.config.get('data_engine', {}).get('storage_path')
 
         if plugins is not None: self.plugins = plugins
@@ -179,9 +184,23 @@ class AlphaUniverse:
         """
         import os
         import hashlib
+        import json
         
-        # Create a deterministic cache key based on universe size and dates
-        cache_key = f"wf_{len(universe)}_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}_{self.horizon}_{stride}"
+        # SENIOR FIX (Cache Integrity): Include all physics and plugin settings in the cache key.
+        # This prevents silent reuse of stale datasets when label_mode, d_param, or plugins change.
+        physics_config = {
+            "label_mode": self.labeler.mode if self.labeler else "directional",
+            "d_param": self.config.get('signal_physics', {}).get('fractional_differentiation', {}).get('d_param', 0.0),
+            "lookback": self.lookback,
+            "horizon": self.horizon,
+            "padding": self.padding,
+            "timeframe": self.timeframe,
+            "plugins": sorted([p.name for p in self.plugins]),
+            "universe_size": len(universe)
+        }
+        config_hash = hashlib.md5(json.dumps(physics_config, sort_keys=True).encode()).hexdigest()[:8]
+        
+        cache_key = f"wf_{len(universe)}_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}_{self.horizon}_{stride}_{config_hash}"
         cache_path = f"data/{cache_key}.pt"
         
         if os.path.exists(cache_path):

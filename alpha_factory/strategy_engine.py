@@ -46,7 +46,10 @@ class StrategyEngine:
 
         # 1. AlphaUniverse (Plugins are auto-discovered by the Registry)
         self.lab = AlphaUniverse(conn=self.data_provider.conn, config=self.config)
-        self.lab.labeler = AlphaLabeler(mode='residual')
+        
+        # SENIOR FIX: Use label_mode from config instead of hardcoded residual
+        label_mode = self.config.get('signal_physics', {}).get('label_mode', 'directional')
+        self.lab.labeler = AlphaLabeler(mode=label_mode)
 
         # 2. Ingestor
         self.ingestor = InstitutionalIngestor(self.data_provider, config=self.config)
@@ -75,6 +78,7 @@ class StrategyEngine:
         # 5. Load the trained "Sniper"
         model_path = self.config.get('model_pipeline', {}).get('model_path', 'models/sniper_v7.pt')
         hidden_dim = self.config.get('model_pipeline', {}).get('architecture', {}).get('hidden_dim', 32)
+        trading_mode = self.config.get('execution_muscle', {}).get('trading_mode', 'sim')
 
         self.model = SniperRanker(specs=self.specs, hidden_dim=hidden_dim)
 
@@ -84,13 +88,19 @@ class StrategyEngine:
                 self.model.eval()
                 logger.info(f"StrategyEngine: Loaded SniperRanker ({model_path}).")
             except Exception as e:
-                logger.warning(
-                    f"StrategyEngine: Model load failed ({e}). Using uninitialized model. "
-                    f"Check that `model_pipeline.architecture.hidden_dim` in config.yaml "
-                    f"matches the trained checkpoint."
-                )
+                msg = f"StrategyEngine: Model load failed ({e}). Check that `model_pipeline.architecture.hidden_dim` in config.yaml matches the trained checkpoint."
+                if trading_mode != 'sim':
+                    logger.error(f"FATAL: {msg}")
+                    raise RuntimeError(msg)
+                else:
+                    logger.warning(f"{msg} Using uninitialized model for research/sim.")
         else:
-            logger.warning(f"StrategyEngine: Model file {model_path} not found. Using uninitialized model.")
+            msg = f"StrategyEngine: Model file {model_path} not found."
+            if trading_mode != 'sim':
+                logger.error(f"FATAL: {msg}")
+                raise RuntimeError(msg)
+            else:
+                logger.warning(f"{msg} Using uninitialized model for research/sim.")
 
         # Diagnostics cache: avoids running a full-universe inference for every
         # single-ticker UI drill-down. Invalidated whenever `as_of` changes.

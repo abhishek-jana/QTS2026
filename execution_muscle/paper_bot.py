@@ -78,7 +78,24 @@ class AsyncPaperBot:
             logger.error(f"Stream Handling Error: {e}")
 
     def submit_order(self, ticker, side, qty):
-        """Submit order to Alpaca REST API."""
+        """
+        Submit order to Alpaca REST API.
+        
+        SENIOR FIX (Safety): orders are only submitted if BOTH
+        config live_trading is true AND env ALPACA_LIVE=1 is set.
+        """
+        is_live_mode = self.config.get("execution_muscle", {}).get("trading_mode") == "live"
+        live_enabled = self.config.get("execution_muscle", {}).get("live_trading") is True
+        env_enabled = os.getenv("ALPACA_LIVE") == "1"
+
+        if is_live_mode:
+            if not (live_enabled and env_enabled):
+                logger.warning(f"⚠️ LIVE ORDER BLOCKED: {side} {qty} {ticker}. (live_trading={live_enabled}, ALPACA_LIVE={env_enabled})")
+                return
+            logger.warning(f"🚨 EXECUTING REAL-MONEY ORDER: {side} {qty} {ticker}")
+        else:
+            logger.info(f"🧪 PAPER ORDER ROUTED: {side} {qty} {ticker}")
+
         try:
             self.rest_api.submit_order(
                 symbol=ticker,

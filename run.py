@@ -170,11 +170,11 @@ def main():
     elif args.command in ["prod", "live"]:
         import asyncio
         from execution_muscle.inference_worker import InferenceWorker
-        if args.command == "live":
-            with open("config.yaml", "r") as f: conf = yaml.safe_load(f)
-            conf['execution_muscle']['trading_mode'] = 'paper'
-            with open("config.yaml", "w") as f: yaml.dump(conf, f)
-        worker = InferenceWorker(); worker.initialize(); asyncio.run(worker.run())
+        # SENIOR FIX: Pass mode override to constructor instead of mutating repo file
+        mode = "live" if args.command == "prod" else "paper"
+        worker = InferenceWorker(mode_override=mode)
+        worker.initialize()
+        asyncio.run(worker.run())
         
     elif args.command == "ui":
         import uvicorn
