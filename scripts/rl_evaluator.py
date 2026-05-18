@@ -19,7 +19,9 @@ def run_rl_evaluation():
     
     # --- STEP 1: PERFORMANCE SIMULATION & LOGIC AUDIT ---
     logger.info("\n--- STEP 1: PERFORMANCE & LOGIC ---")
-    sim = SimulationEngineV5()
+    from alpha_factory.meta_controller import BayesianMetaController
+    mc_agent = BayesianMetaController()
+    sim = SimulationEngineV5(meta_controller=mc_agent)
     df = sim.run(start_date, end_date, max_leverage=1.0, backtest_mode=False)
     
     if df is not None and not df.empty:
@@ -31,7 +33,8 @@ def run_rl_evaluation():
         
         # --- BASELINE COMPARISON ---
         logger.info("\n--- 🤖 RANKNET BASELINE COMPARISON ---")
-        baseline_sim = SimulationEngineV5()
+        mc_base = BayesianMetaController()
+        baseline_sim = SimulationEngineV5(meta_controller=mc_base)
         baseline_sim.rl_pilot = None # Disable RL agent
         baseline_df = baseline_sim.run(start_date, end_date, max_leverage=1.0, backtest_mode=False)
         baseline_final = baseline_df['NLV'].iloc[-1] if baseline_df is not None else 100000.0

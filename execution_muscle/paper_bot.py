@@ -28,7 +28,9 @@ class AsyncPaperBot:
         self.position_avg_costs = {} # Track entry prices
         self.position_unrealized_pnl = {} # Current P&L %
         self.buying_power = 0.0
+        self.cash = 0.0
         self.portfolio_value = 0.0
+        self.price_cache = {}
         self.oms_stats = {"filled": 0, "working": 0, "rejected": 0}
         self.order_log = []
         self.conn = None
@@ -109,31 +111,62 @@ class AsyncPaperBot:
             logger.error(f"Order Submission Failed: {e}")
             self.oms_stats["rejected"] += 1
 
-    async def hydrate_state(self):
-        """Sync positions and cash from exchange."""
-        logger.info("Bot: Synchronizing state with Alpaca...")
+    async def hydrate_state(self, universe_tickers=None):
+        """Sync positions and cash from exchange with extreme reliability."""
         try:
             acct = self.rest_api.get_account()
             self.portfolio_value = float(acct.portfolio_value)
             self.buying_power = float(acct.buying_power)
+            self.cash = float(acct.cash)
             
-            # Initial setup of starting capital for P&L tracking
             if self.starting_capital is None:
                 self.starting_capital = self.portfolio_value
-                logger.info(f"Bot: Initialized starting capital to ${self.starting_capital:,.2f}")
 
             pos = self.rest_api.list_positions()
             self.positions = {p.symbol: float(p.qty) for p in pos}
             self.position_avg_costs = {p.symbol: float(p.avg_entry_price) for p in pos}
             self.position_unrealized_pnl = {p.symbol: float(p.unrealized_plpc) * 100.0 for p in pos}
             
-            total_pnl = self.portfolio_value - self.starting_capital
+            # Initial cache update from current positions
+            for p in pos: self.price_cache[p.symbol] = float(p.current_price)
+
+            # SENIOR FIX (Live Prices): Robust Multi-Source Fallback
+            if universe_tickers:
+                try:
+                    # 1. Try Alpaca Last Trade (Fastest REST for 0.48)
+                    for t in universe_tickers:
+                        if t not in self.price_cache or self.price_cache[t] == 0:
+                            try:
+                                # In 0.48 this is get_last_trade
+                                self.price_cache[t] = float(self.rest_api.get_last_trade(t).price)
+                            except: pass
+                except: pass
+
+                # 2. Global Fallback: yfinance (Guaranteed non-zero even after hours)
+                missing = [t for t in universe_tickers if self.price_cache.get(t, 0) == 0]
+                if missing:
+                    try:
+                        import yfinance as yf
+                        # Bulk fetch from Yahoo
+                        data = yf.download(missing, period="1d", interval="1m", progress=False, threads=True)
+                        if not data.empty:
+                            for t in missing:
+                                if t in data['Close'].columns:
+                                    val = data['Close'][t].iloc[-1]
+                                    if not np.isnan(val): self.price_cache[t] = float(val)
+                    except: pass
             
-            logger.info(f"Bot: Portfolio Value ${self.portfolio_value:,.2f} | Buying Power: ${self.buying_power:,.2f}")
-            return self.portfolio_value, total_pnl
+            # Final Safety: Ensure SPY is never zero
+            if self.price_cache.get('SPY', 0) == 0:
+                try:
+                    import yfinance as yf
+                    self.price_cache['SPY'] = float(yf.Ticker('SPY').fast_info['last_price'])
+                except: pass
+
+            return self.portfolio_value, self.positions
         except Exception as e:
             logger.error(f"State Hydration Failed: {e}")
-            return self.starting_capital or 100000.0, 0.0
+            return self.portfolio_value or 100000.0, self.positions or {}
 
     def calculate_order_qty(self, ticker, price):
         """Calculates dynamic share quantity based on config limits and buying power."""

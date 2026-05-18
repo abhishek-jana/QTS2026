@@ -95,7 +95,6 @@ class PortfolioGym(gym.Env):
 
         # Adversarial Training: Pre-generate signal corruption mask
         self.signal_corruption_mask = np.ones(len(self.dates))
-        # SENIOR FIX: Dial back paranoia. 1-2 chunks of 5 days instead of 2-5 chunks of 10.
         num_corrupt_chunks = np.random.randint(1, 3)
         for _ in range(num_corrupt_chunks):
             start = np.random.randint(0, len(self.dates) - 10)
@@ -125,11 +124,10 @@ class PortfolioGym(gym.Env):
         pos_mv = sum(qty * current_prices[t_idx] for t_idx, qty in self.positions.items())
         current_lev = pos_mv / safe_nlv
 
+        # SENIOR FIX (Unified Belief): Use real MetaController if available, 
+        # else fallback to Top 10 mean proxy.
         if self.meta_controller is not None:
-            try:
-                belief = float(self.meta_controller.get_position_scaler()) * 100.0
-            except:
-                belief = float(np.mean(top_10))
+            belief = float(self.meta_controller.get_position_scaler()) * 100.0
         else:
             belief = float(np.mean(top_10))
 
@@ -188,8 +186,6 @@ class PortfolioGym(gym.Env):
                 if exec_trigger > 0.5: reward -= 2.0
                 if current_lev_ratio > 0.1: reward -= current_lev_ratio * 5.0
             else:
-                # SENIOR FIX: "Opportunity Cost". If signal is good, market is normal, 
-                # and agent is sitting in cash, strongly penalize it.
                 if current_lev_ratio < 0.8:
                     reward -= (0.8 - current_lev_ratio) * 10.0
             
@@ -207,13 +203,15 @@ class PortfolioGym(gym.Env):
                 real_rets_for_mc = np.where(prev_prices > 1e-6, (current_prices / prev_prices) - 1.0, 0.0)
                 self.meta_controller.update_belief(real_rets_for_mc, prev_scores)
 
+            # Revert to 1.0x leverage and [5, 10, 12, 15] concentration
             self.last_target_lev = float(np.clip(leverage_action, 0.0, 1.0))
-            self.last_n_stocks = [5, 10, 15, 20][int(np.clip(concentration_idx, 0, 3.99))]
+            self.last_n_stocks = [5, 10, 12, 15][int(np.clip(concentration_idx, 0, 3.99))]
 
             scores = self.rankings_np[self.current_step]
             temp = self.config.get('rl_training_physics', {}).get('allocation_temperature', 0.5)
             asset_cap = self.config.get('rl_training_physics', {}).get('max_single_asset_cap', 0.15)
 
+            # SENIOR FIX (Risk): Use standardized iterative allocator
             top_k_indices, weights = calculate_safe_weights(scores, self.last_n_stocks, asset_cap, temp)
 
             target_notion = self.account_value * self.last_target_lev

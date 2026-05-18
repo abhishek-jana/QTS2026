@@ -20,13 +20,14 @@ from qts_core.logger import logger
 from research_lab.alpha_universe import AlphaUniverse
 from research_lab.data_engine import DataEngine
 from research_lab.alpha_ranker_sniper import SniperRanker
+from alpha_factory.meta_controller import BayesianMetaController
 
 class SimulationEngineV5:
     """
     Expert-Grade Simulation Engine (Ferrari Edition).
     V7.4.3: Professional Audit Synchronization
     """
-    def __init__(self, config_path="config.yaml"):
+    def __init__(self, config_path="config.yaml", meta_controller=None):
         with open(config_path, "r") as f:
             self.config = yaml.safe_load(f)
         
@@ -34,6 +35,7 @@ class SimulationEngineV5:
         self.db_path = self.config['data_engine']['storage_path']
         self.engine = DataEngine(storage_path=self.db_path)
         self.universe = AlphaUniverse(conn=self.engine.conn, config=self.config)
+        self.meta_controller = meta_controller or BayesianMetaController()
         
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         model_path = self.config['model_pipeline'].get('model_path', 'models/challenger_v2.pt')
@@ -154,7 +156,7 @@ class SimulationEngineV5:
 
         return scores_map
 
-    def _get_rl_observation(self, scores_list, nlv, cash, spy_df, current_dt, starting_capital, peak_value, portfolio_returns, hedge_qty, hedge_entry_p, score_history):
+    def _get_rl_observation(self, scores_list, nlv, cash, spy_df, current_dt, starting_capital, peak_value):
         # UNIFIED PERCEPTION: Scale scores by 100x to match training
         scores_np = np.array(scores_list) * 100.0
         sorted_scores = np.sort(scores_np)
@@ -171,29 +173,33 @@ class SimulationEngineV5:
         if not spy_mask_yesterday.any(): return np.zeros(32, dtype=np.float32)
         spy_row = spy_df[spy_mask_yesterday].iloc[-1]
         
-        belief = np.mean(top_10)
-        vol = spy_row.get('vol_21', 0.02)
-        
+        # SENIOR FIX (Unified Perception): Use MetaController belief matching InferenceWorker
+        belief = float(self.meta_controller.get_position_scaler()) * 100.0
+            
         spy_slice = spy_df[spy_mask_yesterday]
-        if len(spy_slice) > 5:
-            vol_vel = (spy_row['vol_21'] - spy_slice.iloc[-5]['vol_21']) * 1000.0
-        else:
-            vol_vel = 0.0
+        vol_vel = (spy_row['vol_21'] - spy_slice.iloc[-5]['vol_21']) * 1000.0 if len(spy_slice) > 5 else 0.0
             
         long_mv = nlv - cash
         current_lev = (abs(long_mv)) / safe_nlv
         spy_trend = (spy_row.get('ma_ratio', 1.0) - 1.0) * 10.0
         rsi = (spy_row.get('rsi_14', 50.0) - 50.0) / 50.0
-        spy_ret_yest = spy_row.get('ret', 0.0) * 10.0
+        spy_ret_yest = spy_row.get('ret', 0.0)
         
-        obs = np.concatenate([
-            top_10, bot_10, 
-            [belief, drawdown, vol, current_lev],
-            [vol_vel, spy_trend, rsi, spy_ret_yest],
-            [cash/safe_nlv, 0.0, 1.0, current_dt_naive.weekday()/6.0]
-        ]).astype(np.float32)
-        
-        return np.clip(np.nan_to_num(obs), -10.0, 10.0)
+        from alpha_factory.observation_utils import build_rl_observation
+        return build_rl_observation(
+            top_10_scores=top_10,
+            bot_10_scores=bot_10,
+            belief=belief,
+            drawdown=drawdown,
+            vol_21=spy_row.get('vol_21', 0.02),
+            current_lev=current_lev,
+            vol_vel=vol_vel,
+            spy_trend=spy_trend,
+            rsi=rsi,
+            spy_ret=spy_ret_yest,
+            cash_ratio=cash/safe_nlv,
+            dow=current_dt_naive.weekday()/6.0
+        )
 
     def run(self, start_date, end_date, max_leverage=1.0, backtest_mode=False):
         logger.info(f"🏁 Starting REAL-WORLD Simulation: {start_date.date()} -> {end_date.date()} | Max Lev: {max_leverage}x")
@@ -250,9 +256,9 @@ class SimulationEngineV5:
                 portfolio_returns.append(agent_ret)
 
             scores_dict = all_scores.get(dt, {}); obs_scores = [scores_dict.get(t, 0.0) for t in self.tickers]; score_history.append(obs_scores)
-            obs = self._get_rl_observation(obs_scores, nlv, cash, spy_df, dt, starting_capital, peak_value, portfolio_returns, hedge_qty=0, hedge_entry_p=0, score_history=score_history)
+            obs = self._get_rl_observation(obs_scores, nlv, cash, spy_df, dt, starting_capital, peak_value)
             
-            # Realized IC
+            # Realized IC & MetaController Update
             ic_buffer.append({"scores": scores_dict, "prices": price_cache.copy()})
             if len(ic_buffer) > 3:
                 past = ic_buffer.pop(0)
@@ -262,6 +268,8 @@ class SimulationEngineV5:
                         r_rets.append((price_cache[t]/(past['prices'][t]+1e-9))-1)
                         p_scores.append(past['scores'].get(t, 0.0))
                 if len(r_rets) > 10:
+                    # SENIOR FIX (Brain Sync): Active learning in the simulator
+                    self.meta_controller.update_belief(np.array(r_rets), np.array(p_scores))
                     val_ic, _ = spearmanr(p_scores, r_rets)
                     realized_ic = max(0, val_ic)
 
@@ -269,9 +277,9 @@ class SimulationEngineV5:
             if self.rl_pilot:
                 action, _ = self.rl_pilot.predict(obs, deterministic=True)
                 should_reb_signal = (action[2] > 0.7) or (dt.weekday() == 0) or (i == 0)
-                # SENIOR FIX: Match environment's continuous leverage (0.0 to 1.2x)
-                target_lev_signal = float(np.clip(action[0], 0.0, 1.2))
-                concentration_signal = [12, 12, 12, 15][int(np.clip(action[1], 0, 3.99))]
+                # SENIOR FIX: Match environment's continuous leverage (0.0 to 1.0x)
+                target_lev_signal = float(np.clip(action[0], 0.0, 1.0))
+                concentration_signal = [5, 10, 12, 15][int(np.clip(action[1], 0, 3.99))]
             else:
                 should_reb_signal = (dt.weekday() == 0) or (i == 0); target_lev_signal = 1.0; concentration_signal = 12
 
@@ -296,20 +304,19 @@ class SimulationEngineV5:
 
             if should_rebalance:
                 last_target_lev = target_lev; last_concentration = concentration
-                target_notional = (nlv * target_lev); top_picks = sorted(exec_scores.keys(), key=lambda x: exec_scores.get(x, -9), reverse=True)[:concentration]
+                target_notional = (nlv * target_lev)
                 
                 # High-Density Allocation Logic: Read from config
                 temp = self.config.get('execution_muscle', {}).get('allocation_temperature', 0.5)
                 asset_cap = self.config.get('execution_muscle', {}).get('max_single_asset_cap', 0.15)
                 
-                top_scores = np.array([exec_scores.get(x, -9) for x in top_picks]) * 100.0
-                exp_scores = np.exp((top_scores - np.max(top_scores)) / temp)
-                weights = exp_scores / (np.sum(exp_scores) + 1e-9)
+                # SENIOR FIX (Risk Consistency): Use the unified calculate_safe_weights allocator
+                from alpha_factory.observation_utils import calculate_safe_weights
+                universe_list = self.config.get('universe', {}).get('tickers', list(exec_scores.keys()))
+                scores_arr = np.array([exec_scores.get(t, -99.0) for t in universe_list])
                 
-                # Enforce asset cap for safety, then redistribute
-                if np.max(weights) > asset_cap:
-                    weights = np.clip(weights, 0, asset_cap)
-                    weights = weights / np.sum(weights)
+                top_k_indices, weights = calculate_safe_weights(scores_arr, concentration, asset_cap, temp)
+                top_picks = [universe_list[idx] for idx in top_k_indices]
                 
                 turnover_notional = 0.0
                 for t in list(positions.keys()):

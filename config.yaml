@@ -14,7 +14,7 @@ data_engine:
   - close
   - volume
   provider: alpaca
-  start_date: '2016-01-01'
+  start_date: '2019-01-01'
   storage_path: data/uqts_v2_intraday.ddb
   timeframe: 15Min
 
@@ -23,8 +23,8 @@ execution_muscle:
   latency_stress_test: true
   # Must match rl_training_physics.max_single_asset_cap to avoid
   # train/deploy regime drift. If you change one, change the other.
-  max_position_size: 0.15
-  max_single_asset_cap: 0.15
+  max_position_size: 0.20
+  max_single_asset_cap: 0.20
   min_belief_threshold: 0.65
   mpc_solver:
     horizon: 5
@@ -37,7 +37,7 @@ execution_muscle:
     kill_switch_enabled: true
     max_notional_per_order: 50000.0
     max_total_leverage: 3.0
-  trading_mode: paper
+  trading_mode: live
   # Explicit live-trading flag. Orders are only submitted if BOTH
   # this is true AND the env var ALPACA_LIVE=1 is set.
   live_trading: false
@@ -74,7 +74,7 @@ risk_metacontroller:
 
 rl_training_physics:
   allocation_temperature: 0.5
-  max_single_asset_cap: 0.15
+  max_single_asset_cap: 0.20
 
 signal_physics:
   fractional_differentiation:

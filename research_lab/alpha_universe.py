@@ -89,11 +89,11 @@ class AlphaUniverse:
             
         query = f"""
             WITH ranked_data AS (
-                SELECT *, ROW_NUMBER() OVER(PARTITION BY ticker, event_time ORDER BY knowledge_time DESC) as rn
+                SELECT *, ROW_NUMBER() OVER(PARTITION BY ticker, event_time ORDER BY knowledge_time DESC, close DESC, volume DESC, open DESC, high DESC, low DESC) as rn
                 FROM market_data
                 WHERE ticker IN ('{ticker_list}') {time_filter}
             )
-            SELECT {col_str} FROM ranked_data WHERE rn = 1 ORDER BY event_time ASC
+            SELECT {col_str} FROM ranked_data WHERE rn = 1 ORDER BY event_time ASC, ticker ASC
         """
         pit_view = self.conn.execute(query).df()
         if pit_view.empty: return pit_view
@@ -107,8 +107,10 @@ class AlphaUniverse:
         lookback = lookback or self.lookback
         
         if shard_override is None:
+            # SENIOR FIX (Stability): Pull much more history (1000 bars) for snapshot
+            # to ensure Fractional Differentiation and Wavelets have converged.
             total_window = lookback + self.padding
-            days_back = max(total_window + 10, 100)
+            days_back = max(total_window + 30, 250) # 250 days for 15m is ~7000 bars
             fetch_start = as_of - timedelta(days=days_back)
             batch_view = self.get_batch_pit_view(tickers, as_of, start_time=fetch_start)
             if batch_view.empty: return None
@@ -130,7 +132,8 @@ class AlphaUniverse:
             full_ticker_data = shard_override[ticker]
             
             ticker_slice_all = full_ticker_data[full_ticker_data.index <= as_of]
-            if len(ticker_slice_all) < lookback: continue
+            # Ensure we have enough bars for the full physics window
+            if len(ticker_slice_all) < (lookback + self.padding): continue
             
             actual_as_of = ticker_slice_all.index[-1]
             ticker_slice = ticker_slice_all.tail(lookback + self.padding)
@@ -169,8 +172,21 @@ class AlphaUniverse:
             y_list.append(label_val); final_tickers.append(ticker); final_times.append(actual_as_of)
                 
         if not final_tickers: return None
+        
+        # Assembling MultiModalBatch with raw_price (Critical for UI)
+        batch_data = {name: torch.stack(tensors) for name, tensors in fused_data.items()}
+        
+        # SENIOR FIX: Always include raw_price in snapshot output
+        price_list = []
+        for ticker in final_tickers:
+            if ticker in shard_override:
+                price_list.append(float(shard_override[ticker].iloc[-1]['close']))
+            else:
+                price_list.append(0.0)
+        batch_data["raw_price"] = torch.tensor(price_list).float()
+
         return MultiModalBatch(
-            data={name: torch.stack(tensors) for name, tensors in fused_data.items()}, 
+            data=batch_data, 
             labels=torch.tensor(np.array(y_list)).float(), 
             tickers=final_tickers, 
             times=final_times

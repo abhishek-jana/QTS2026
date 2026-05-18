@@ -29,6 +29,8 @@ A production-grade, high-density institutional cockpit for the UQTS-2026 platfor
 
 ### Group 4: Market Dynamics (3 Instruments)
 9.  **Decile Ladder**: Sorting of the universe by Z-score. Provides actionable Long/Short polarities.
+    *   **Flicker-Shield 2.0**: Scores are quantized to 6 decimal places and re-centered around a stable median to prevent Long/Short flip-flopping due to noise.
+    *   **Relative Alpha**: Stocks are labeled relative to the universe median, ensuring a balanced long/short perspective regardless of macro drift.
 10. **Sector Matrix**: Interactive grid of industrial exposure. Each block shows conviction (α) and net exposure for a specific GICS sector.
 11. **L/S Equity Spread**: Tracking the cumulative return delta between Top and Bottom decile portfolios.
 

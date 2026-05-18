@@ -170,9 +170,13 @@ def main():
     elif args.command in ["prod", "live"]:
         import asyncio
         from execution_muscle.inference_worker import InferenceWorker
-        # SENIOR FIX: Pass mode override to constructor instead of mutating repo file
-        mode = "live" if args.command == "prod" else "paper"
-        worker = InferenceWorker(mode_override=mode)
+        # 'prod' respects config.yaml trading_mode (sim/paper/live)
+        # 'live' forces paper mode for safety
+        if args.command == "live":
+            worker = InferenceWorker(mode_override="paper")
+        else:
+            worker = InferenceWorker()
+            
         worker.initialize()
         asyncio.run(worker.run())
         

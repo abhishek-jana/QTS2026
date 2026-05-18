@@ -122,6 +122,10 @@ class StrategyEngine:
         """
         Returns a clean 'House View' of sorted tickers, scores, and signal energy.
         """
+        # SENIOR FIX (Flicker-Death): Deterministic Caching
+        if self._view_cache is not None and self._view_cache_as_of == as_of:
+            return self._view_cache
+
         tickers = self.config['universe']['tickers']
 
         lookback = self.config.get('signal_physics', {}).get('lookback_days', 63)
@@ -137,10 +141,11 @@ class StrategyEngine:
                 "as_of": as_of.isoformat(),
                 "status": "DATA_MISSING",
             }
-            self._view_cache_as_of = as_of
-            self._view_cache = view
+            # SENIOR FIX (Cache Trap): Never cache error states so we can recover after ingestion
             return view
 
+        # Ensure strict deterministic inference
+        self.model.eval()
         with torch.no_grad():
             device = next(self.model.parameters()).device
             inputs = {k: v.to(device) for k, v in batch.data.items()}
@@ -181,7 +186,9 @@ class StrategyEngine:
 
         ladder = []
         for i, ticker in enumerate(batch.tickers):
-            score_val = float(scores[i]) if len(scores) > i else 0.0
+            # SENIOR FIX (Stability): Round scores to 6 decimal places to eliminate 
+            # floating-point jitter during after-market/frozen data cycles.
+            score_val = float(np.round(scores[i], 6)) if len(scores) > i else 0.0
 
             shap = {}
             for j, p_name in enumerate(model_past_keys):
@@ -202,7 +209,8 @@ class StrategyEngine:
                 "shap": shap,
             })
 
-        ladder.sort(key=lambda x: x['score'], reverse=True)
+        # SENIOR FIX (Stability): Score Desc, Ticker Asc tie-breaker
+        ladder.sort(key=lambda x: (-x['score'], x['ticker']))
 
         global_energy = 0.0
         if 'x_past_x_spatial' in batch.data:
@@ -291,7 +299,7 @@ class StrategyEngine:
 
         for entry in view.get('ladder', []):
             if entry['ticker'] == ticker:
-                shap = entry['shap']
+                shap = entry.get('shap', {})
                 break
 
         return {

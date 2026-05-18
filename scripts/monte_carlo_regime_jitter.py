@@ -154,29 +154,28 @@ class MonteCarloStressTest:
                 should_rebalance = (dt.weekday() == 0); last_lev = 1.0; last_conc = 12
 
             if should_rebalance:
-                target_notional = (nlv * last_lev); top_picks = sorted(scores_dict.keys(), key=lambda x: scores_dict[x], reverse=True)[:last_conc]
+                target_notional = (nlv * last_lev)
                 
                 # High-Density Allocation Logic: Read from config
                 temp = self.config.get('execution_muscle', {}).get('allocation_temperature', 0.5)
                 asset_cap = self.config.get('execution_muscle', {}).get('max_single_asset_cap', 0.15)
                 
-                top_scores = np.array([scores_dict.get(x, -9) for x in top_picks]) * 100.0
-                exp_scores = np.exp((top_scores - np.max(top_scores)) / temp)
-                weights = exp_scores / (np.sum(exp_scores) + 1e-9)
+                # SENIOR FIX: Use unified weight allocator to prevent 1-stock YOLO bug
+                from alpha_factory.observation_utils import calculate_safe_weights
+                universe_list = self.config.get('universe', {}).get('tickers', list(scores_dict.keys()))
+                scores_arr = np.array([scores_dict.get(t, -99.0) for t in universe_list])
                 
-                # Enforce safety cap and redistribute
-                if np.max(weights) > asset_cap:
-                    weights = np.clip(weights, 0, asset_cap)
-                    weights = weights / np.sum(weights)
+                top_k_indices, weights = calculate_safe_weights(scores_arr, last_conc, asset_cap, temp)
+                top_picks = [universe_list[idx] for idx in top_k_indices]
                 
                 fric = 0.0050 if is_jump and jump_multiplier < 1.0 else 0.0005
                 turnover = 0.0; trade_prices = prices * jump_multiplier
                 for t in list(positions.keys()):
                     if t not in top_picks: v = positions[t] * trade_prices.get(t, 0.0); cash += v; turnover += v; del positions[t]
-                for idx, t in enumerate(top_picks):
+                for idx_w, t in enumerate(top_picks):
                     p = trade_prices.get(t, 0.0)
                     if p > 0:
-                        t_qty = int((target_notional * weights[idx]) / p); c_qty = positions.get(t, 0)
+                        t_qty = int((target_notional * weights[idx_w]) / p); c_qty = positions.get(t, 0)
                         if c_qty == 0 or abs(t_qty - c_qty) / (c_qty + 1e-6) > 0.15:
                             t_v = (t_qty - c_qty) * p; cash -= t_v; turnover += abs(t_v); positions[t] = t_qty
                 cash -= turnover * fric

@@ -40,8 +40,8 @@ class InstitutionalIngestor:
         missing_tails = {} # ticker -> adjusted_start
         missing_heads = {} # ticker -> adjusted_end
         
-        target_start = pd.to_datetime(start_date).tz_localize('UTC') if pd.to_datetime(start_date).tzinfo is None else pd.to_datetime(start_date)
-        target_end = pd.to_datetime(end_date).tz_localize('UTC') if pd.to_datetime(end_date).tzinfo is None else pd.to_datetime(end_date)
+        target_start = pd.to_datetime(start_date).tz_localize('US/Eastern').tz_convert('UTC') if pd.to_datetime(start_date).tzinfo is None else pd.to_datetime(start_date).tz_convert('UTC')
+        target_end = pd.to_datetime(end_date).tz_localize('UTC') if pd.to_datetime(end_date).tzinfo is None else pd.to_datetime(end_date).tz_convert('UTC')
         if end_date == "now": target_end = pd.Timestamp.now(tz='UTC')
 
         logger.info("🔍 Analyzing local database for data gaps...")
@@ -50,16 +50,18 @@ class InstitutionalIngestor:
             if not res or res[0] is None:
                 missing_tails[ticker] = start_date
             else:
-                db_min = pd.to_datetime(res[0]).tz_localize('UTC') if pd.to_datetime(res[0]).tzinfo is None else pd.to_datetime(res[0])
-                db_max = pd.to_datetime(res[1]).tz_localize('UTC') if pd.to_datetime(res[1]).tzinfo is None else pd.to_datetime(res[1])
+                # SENIOR FIX (Timezones): DuckDB stores naive EST. Localize as US/Eastern then convert to UTC.
+                db_min = pd.to_datetime(res[0]).tz_localize('US/Eastern').tz_convert('UTC')
+                db_max = pd.to_datetime(res[1]).tz_localize('US/Eastern').tz_convert('UTC')
                 
-                # Check for tail gap (new data since last run)
-                if db_max < (target_end - timedelta(hours=1)):
-                    missing_tails[ticker] = (db_max + timedelta(minutes=15)).strftime("%Y-%m-%d %H:%M:%S")
+                # Check for tail gap (new data since last run).
+                # Reduced threshold to 15m to catch the very latest bars.
+                if db_max < (target_end - timedelta(minutes=15)):
+                    missing_tails[ticker] = (pd.to_datetime(res[1]) + timedelta(minutes=15)).strftime("%Y-%m-%d %H:%M:%S")
                 
                 # Check for head gap (user requested older data than we have)
-                if db_min > (target_start + timedelta(hours=1)):
-                    missing_heads[ticker] = (db_min - timedelta(minutes=15)).strftime("%Y-%m-%d %H:%M:%S")
+                if db_min > (target_start + timedelta(minutes=15)):
+                    missing_heads[ticker] = (pd.to_datetime(res[0]) - timedelta(minutes=15)).strftime("%Y-%m-%d %H:%M:%S")
 
         if not missing_tails and not missing_heads:
             logger.info("✅ DATABASE SYNCED: All requested data is already present.")
@@ -70,10 +72,11 @@ class InstitutionalIngestor:
             if missing_tails:
                 earliest_start = min(missing_tails.values())
                 self._ingest_alpaca(list(missing_tails.keys()), earliest_start, end_date)
+            
+            # SENIOR FIX (Efficiency): Batch head requests just like tails
             if missing_heads:
-                # This is rare (user reaching back), fetch specific head gaps
-                for t, head_end in missing_heads.items():
-                    self._ingest_alpaca([t], start_date, head_end)
+                latest_head_end = max(missing_heads.values())
+                self._ingest_alpaca(list(missing_heads.keys()), start_date, latest_head_end)
                     
         elif self.provider == 'TIINGO':
             # Tiingo is ticker-by-ticker, so we can be surgical
@@ -162,7 +165,10 @@ class InstitutionalIngestor:
             if date_str == "now":
                 return pd.Timestamp.now(tz='UTC').isoformat()
             dt = pd.to_datetime(date_str)
-            if dt.tzinfo is None: dt = dt.tz_localize('UTC')
+            # SENIOR FIX (Timezones): date_str from missing_tails is EST.
+            # Localize as US/Eastern then convert to UTC before RFC3339 format.
+            if dt.tzinfo is None:
+                dt = dt.tz_localize('US/Eastern').tz_convert('UTC')
             return dt.isoformat()
             
         alpaca_start = to_rfc3339(start_date)

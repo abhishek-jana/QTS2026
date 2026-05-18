@@ -186,11 +186,12 @@ const BenchmarkChart = ({ history }) => {
   const initialPort = history[0].portfolio || 1;
   const initialSpy = history[0].spy || 1;
   
-  // Normalize both to 100k starting value for a fair "100k baseline" comparison
+  // SENIOR FIX: Do not normalize to 100k. Show actual raw Net Liq to match the top bar.
+  // The percentage return is still calculated correctly from the start of the window.
   const chartData = history.map(d => ({
     time: d.time,
-    portfolio: (d.portfolio / initialPort) * 100000,
-    spy: (d.spy / initialSpy) * 100000,
+    portfolio: d.portfolio,
+    spy: d.spy,
     portPct: ((d.portfolio / initialPort) - 1) * 100,
     spyPct: ((d.spy / initialSpy) - 1) * 100
   }));
@@ -206,19 +207,19 @@ const BenchmarkChart = ({ history }) => {
             <div className="flex gap-4">
                 <div className="flex flex-col">
                   <span className="text-[8px] text-slate-400 uppercase font-black tracking-widest font-bold">Agent</span>
-                  <span className={`text-xs font-black tabular-nums ${latestPort >= 100000 ? 'text-emerald-400' : 'text-rose-500'}`}>
+                  <span className={`text-xs font-black tabular-nums ${latestPort >= initialPort ? 'text-emerald-400' : 'text-rose-500'}`}>
                     ${(latestPort/1000).toFixed(1)}k ({latestPortPct >= 0 ? '+' : ''}{latestPortPct.toFixed(2)}%)
                   </span>
                 </div>
                 <div className="flex flex-col">
                   <span className="text-[8px] text-slate-400 uppercase font-black tracking-widest font-bold">S&P 500</span>
-                  <span className={`text-xs font-black tabular-nums ${latestSpy >= 100000 ? 'text-emerald-400' : 'text-rose-500'}`}>
+                  <span className={`text-xs font-black tabular-nums ${latestSpy >= initialSpy ? 'text-emerald-400' : 'text-rose-500'}`}>
                     ${(latestSpy/1000).toFixed(1)}k ({latestSpyPct >= 0 ? '+' : ''}{latestSpyPct.toFixed(2)}%)
                   </span>
                 </div>
             </div>
-            <div className={`text-[10px] font-black px-2 py-0.5 border ${latestPort > latestSpy ? 'border-emerald-500/50 text-emerald-500 bg-emerald-500/5' : 'border-rose-500/50 text-rose-500'}`}>
-                {latestPort > latestSpy ? 'ALPHA ACTIVE' : 'INDEX DOMINANT'}
+            <div className={`text-[10px] font-black px-2 py-0.5 border ${latestPortPct > latestSpyPct ? 'border-emerald-500/50 text-emerald-500 bg-emerald-500/5' : 'border-rose-500/50 text-rose-500'}`}>
+                {latestPortPct > latestSpyPct ? 'ALPHA ACTIVE' : 'INDEX DOMINANT'}
             </div>
         </div>
         <div className="h-[180px] w-full bg-black/40 border border-slate-800/60 p-2 shadow-inner">
@@ -250,7 +251,7 @@ const BenchmarkChart = ({ history }) => {
                     />
                     <Area type="monotone" dataKey="portfolio" stroke="#10b981" strokeWidth={3} fillOpacity={1} fill="url(#colorPort)" dot={false} />
                     <Area type="monotone" dataKey="spy" stroke="#64748b" strokeWidth={2} strokeDasharray="5 5" fill="transparent" dot={false} />
-                    <ReferenceLine y={100000} stroke="#475569" strokeWidth={1} strokeDasharray="3 3" label={{ position: 'right', value: '100k', fill: '#475569', fontSize: 8, fontWeight: 'bold' }} />
+                    <ReferenceLine y={initialPort} stroke="#475569" strokeWidth={1} strokeDasharray="3 3" label={{ position: 'right', value: 'Start', fill: '#475569', fontSize: 8, fontWeight: 'bold' }} />
                 </AreaChart>
             </ResponsiveContainer>
         </div>
@@ -509,6 +510,7 @@ export default function MissionControl() {
     socket.onopen = () => {
       setStatus('active');
       lastMsgRef.current = Date.now();
+      socket.send(JSON.stringify({ command: 'SET_TICKER', ticker: 'SPY' }));
     };
 
     socket.onmessage = (e) => {
