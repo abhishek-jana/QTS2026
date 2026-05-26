@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { createChart, ColorType, CandlestickSeries } from 'lightweight-charts';
 import { 
   Activity, ShieldAlert, TrendingUp, Zap, Terminal, Cpu, Gauge, AlertTriangle,
-  HelpCircle, X, Filter, GripVertical, Info
+  HelpCircle, X, Filter, GripVertical, Info, Target, Brain
 } from 'lucide-react';
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
 import { arrayMove, SortableContext, sortableKeyboardCoordinates, verticalListSortingStrategy, useSortable } from '@dnd-kit/sortable';
@@ -352,34 +352,77 @@ const Panel = ({ title, icon: Icon, children, className = "" }) => (
 const MissionManual = ({ isOpen, onClose }) => {
   if (!isOpen) return null;
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/90 backdrop-blur-xl p-4 sm:p-20 font-mono">
-      <div className="bg-[#0a0a0a] border border-emerald-500/20 w-full max-w-4xl shadow-[0_0_100px_rgba(16,185,129,0.1)] relative flex flex-col max-h-full">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/90 backdrop-blur-xl p-4 sm:p-20 font-mono text-slate-300 leading-relaxed">
+      <div className="bg-[#0a0a0a] border border-emerald-500/20 w-full max-w-5xl shadow-[0_0_100px_rgba(16,185,129,0.1)] relative flex flex-col max-h-[90vh]">
         <div className="flex justify-between items-center p-6 border-b border-emerald-500/10">
           <div className="flex items-center gap-3">
             <Terminal className="w-5 h-5 text-emerald-500" />
-            <h2 className="text-emerald-500 font-black uppercase tracking-[0.3em] text-sm">Institutional Operations Manual</h2>
+            <h2 className="text-emerald-500 font-black uppercase tracking-[0.3em] text-sm">Institutional Operations Manual :: Sniper V7.4</h2>
           </div>
           <button onClick={onClose} className="p-2 hover:bg-emerald-500/10 text-emerald-500 transition-all border border-transparent hover:border-emerald-500/20"><X className="w-5 h-5" /></button>
         </div>
-        <div className="p-8 space-y-6 text-xs text-slate-300 leading-relaxed overflow-y-auto">
-          <section>
-            <h3 className="font-bold text-emerald-500 uppercase tracking-widest mb-3 border-b border-emerald-500/10 pb-1">1. Spectral Alpha Engine</h3>
-            <p>Visualizes multi-scale wavelet energy distribution. Click any ticker in the Ranking Ladder to hydrate the technical feed. The ADF p-value indicates time-series stationarity (Target: &lt; 0.05). Heatmap represents the Continuous Wavelet Transform (CWT) spectrogram.</p>
-          </section>
-          <section>
-            <h3 className="font-bold text-emerald-500 uppercase tracking-widest mb-3 border-b border-emerald-500/10 pb-1">2. RL Metacognition</h3>
-            <p>Displays the internal state of the PPO Policy Pilot. **Policy Conviction** tracks the agent's mathematical expectation of alpha. **Manifold Drift** (t-SNE Latent) detects structural regime shifts by projecting high-dimensional feature space into a 2D drift plane.</p>
-          </section>
-          <section>
-            <h3 className="font-bold text-emerald-500 uppercase tracking-widest mb-3 border-b border-emerald-500/10 pb-1">3. Execution Muscle (C++26)</h3>
-            <p>High-frequency OMS kernel running Quadratic Slippage models. All fills are simulated with a 15bps realistic institutional tax. The **Implementation Shortfall** metric monitors the gap between decision price and fill price.</p>
-          </section>
-          <section>
-            <h3 className="font-bold text-emerald-500 uppercase tracking-widest mb-3 border-b border-emerald-500/10 pb-1">4. Performance Benchmarking</h3>
-            <p>Real-time attribution against the S&P 500. Portfolio value is standardized to $100k at start of simulation. The **Alpha Active** indicator triggers when the Agent Portfolio out-performs the market on a total return basis.</p>
-          </section>
+        <div className="p-8 space-y-8 text-[11px] overflow-y-auto">
+          
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+            <section className="space-y-4">
+              <h3 className="font-bold text-emerald-500 uppercase tracking-widest border-b border-emerald-500/10 pb-2 flex items-center gap-2">
+                <Activity className="w-4 h-4" /> 1. Data Ingestion & Heartbeat
+              </h3>
+              <div className="space-y-2">
+                <p><span className="text-emerald-400 font-bold">INTERVAL:</span> The system operates on <span className="text-white">15-minute bars</span>. This granularity ensures alignment with institutional liquidity cycles and model training regimes.</p>
+                <p><span className="text-emerald-400 font-bold">SYNC HEARTBEAT:</span> Every <span className="text-white">5 minutes</span>, the bot attempts to sync local DuckDB storage with Alpaca REST data. Note that bars only finalize 1-2 minutes after the 15-minute window closes.</p>
+                <p><span className="text-emerald-400 font-bold">LATENCY:</span> Charts may appear 5-15 minutes behind real-time tape due to this finalization requirement.</p>
+              </div>
+            </section>
+
+            <section className="space-y-4">
+              <h3 className="font-bold text-emerald-500 uppercase tracking-widest border-b border-emerald-500/10 pb-2 flex items-center gap-2">
+                <Target className="w-4 h-4" /> 2. T+1 Strategy Lifecycle
+              </h3>
+              <div className="space-y-2">
+                <p><span className="text-emerald-400 font-bold">SIGNAL GENERATION:</span> AI scores are recalculated continuously. The <span className="text-white">"Final Signal"</span> is calculated using closing prices after 4:00 PM EST.</p>
+                <p><span className="text-emerald-400 font-bold">QUEUING:</span> Anytime after <span className="text-white">4:05 PM</span>, running the bot will automatically "Lock" the latest signal into the <span className="text-rose-500">T+1 Strategy Queue</span>.</p>
+                <p><span className="text-emerald-400 font-bold">PERSISTENCE:</span> This queue is stored in Redis. Once locked, the bot can be powered down. The plan remains persistent until the next day's execution window.</p>
+              </div>
+            </section>
+
+            <section className="space-y-4">
+              <h3 className="font-bold text-emerald-500 uppercase tracking-widest border-b border-emerald-500/10 pb-2 flex items-center gap-2">
+                <Zap className="w-4 h-4" /> 3. Execution Muscle (C++26)
+              </h3>
+              <div className="space-y-2">
+                <p><span className="text-emerald-400 font-bold">WINDOW:</span> Orders are automatically routed between <span className="text-white">3:50 PM and 3:55 PM EST</span> on Day T+1.</p>
+                <p><span className="text-emerald-400 font-bold">SLIPPAGE:</span> All fills assume a <span className="text-white">15bps</span> institutional tax. The Implementation Shortfall monitors gap variance between decision and fill.</p>
+                <p><span className="text-emerald-400 font-bold">SAFETY:</span> Live trading requires <span className="text-rose-500">ALPACA_LIVE=1</span> environment variable AND <span className="text-white">live_trading: true</span> in config.yaml.</p>
+              </div>
+            </section>
+
+            <section className="space-y-4">
+              <h3 className="font-bold text-emerald-500 uppercase tracking-widest border-b border-emerald-500/10 pb-2 flex items-center gap-2">
+                <Brain className="w-4 h-4" /> 4. RL Metacognition
+              </h3>
+              <div className="space-y-2">
+                <p><span className="text-emerald-400 font-bold">CONVICTION:</span> Measures the PPO Agent's mathematical expectation of outperformance.</p>
+                <p><span className="text-emerald-400 font-bold">ADF TEST:</span> Indicates stationarity. Values <span className="text-white">&lt; 0.05</span> suggest high-probability mean-reverting or trending regimes.</p>
+                <p><span className="text-emerald-400 font-bold">SHAP FUSION:</span> Explains feature contribution (Wavelets vs Volume vs Momentum) for the current focus ticker.</p>
+              </div>
+            </section>
+          </div>
+
+          <div className="mt-8 p-4 bg-emerald-500/5 border border-emerald-500/10 rounded">
+            <h4 className="text-emerald-400 font-bold uppercase tracking-widest mb-2 text-[10px]">Operational Continuity Checklist</h4>
+            <ul className="grid grid-cols-1 md:grid-cols-3 gap-4 text-[10px]">
+              <li className="flex items-start gap-2 italic"><span className="text-emerald-500">&gt;&gt;</span> Ensure Redis is running (Service 6379)</li>
+              <li className="flex items-start gap-2 italic"><span className="text-emerald-500">&gt;&gt;</span> Run bot after 4:05 PM to lock tomorrow's picks</li>
+              <li className="flex items-start gap-2 italic"><span className="text-emerald-500">&gt;&gt;</span> Launch bot by 3:45 PM for automated T+1 execution</li>
+            </ul>
+          </div>
+
         </div>
-        <div className="p-6 border-t border-emerald-500/10 text-[9px] text-emerald-900 font-black uppercase tracking-widest text-center italic">uqts_v4.1_elite_hybrid // secure_terminal_session</div>
+        <div className="p-6 border-t border-emerald-500/10 text-[9px] text-emerald-900 font-black uppercase tracking-widest text-center italic flex justify-between items-center">
+          <span>uqts_v7.4_sniper_residual // secure_terminal_session</span>
+          <span className="text-emerald-950 font-mono">STATUS: OPERATIONAL</span>
+        </div>
       </div>
     </div>
   );
@@ -722,7 +765,11 @@ export default function MissionControl() {
                {inst.pending_decision && (
                     <div className="bg-emerald-500/5 border border-emerald-500/20 p-2 mt-4 rounded-sm animate-pulse">
                         <div className="text-[9px] font-black text-emerald-400 uppercase tracking-[0.2em] mb-2 flex justify-between border-b border-emerald-900/40 pb-1">
-                            <span>🔮 Strategy Queue (Next Day)</span>
+                            <span>
+                                {inst.pending_decision.status === 'LOCKED (TODAY)' ? '🔒 LOCKED Strategy (TODAY)' : 
+                                 inst.pending_decision.status === 'LOCKED (T+1)' ? '🔒 LOCKED Strategy (T+1)' : 
+                                 '🔮 PROJECTED Strategy (LIVE)'}
+                            </span>
                             <span>Lev: {inst.pending_decision.target_lev}x</span>
                         </div>
                         

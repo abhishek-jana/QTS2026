@@ -86,7 +86,7 @@ class InferenceWorker:
             sys.exit(1)
 
         from research_lab.data_engine import DataEngine
-        self.data_engine = DataEngine(storage_path=self.config['data_engine']['storage_path'], read_only=True)
+        self.data_engine = DataEngine(storage_path=self.config['data_engine']['storage_path'], read_only=(self.trading_mode == 'sim'))
         self.strategy = StrategyEngine(data_provider=self.data_engine, config_path=config_path)
         
         # PRE-FETCH SPY FOR MACRO ALIGNMENT
@@ -463,7 +463,7 @@ class InferenceWorker:
     async def _update_oms_live(self, house_view):
         # Implementation of live rebalance with ALPACA_LIVE safety gate
         now = datetime.now()
-        nlv, positions = await self.live_bot.hydrate_state()
+        nlv, positions = await self.live_bot.hydrate_state(universe_tickers=self.tickers)
         self.peak_value = max(self.peak_value, nlv)
         
         # Perceived Conviction (Matches Sim)
@@ -531,52 +531,91 @@ class InferenceWorker:
             }
             self.redis_client.set("uqts:live:pending_signal", json.dumps(pending_signal, cls=NumpyEncoder))
             
-            # Check for actual execution trigger (3:50 PM EST)
+            # --- EXECUTION ENGINE TRIGGER ---
             is_trade_window = (now.hour == 15 and 50 <= now.minute <= 55)
             last_trade = self.redis_client.get("uqts:live:last_trade_date")
-            today_str = now.strftime("%Y-%m-%d")
-            
+
             if is_trade_window and last_trade != today_str:
-                # Load YESTERDAY'S signal for T+1 execution
-                queued_raw = self.redis_client.get("uqts:live:queued_signal")
+                # 1. Try to load YESTERDAY'S signal
+                exec_signal = None
                 if queued_raw:
                     queued = json.loads(queued_raw)
-                    logger.warning(f"🚀 LIVE EXECUTION HEARTBEAT: Deploying T+1 Signal from {queued['date']}")
-                    
-                    # 1. First Sells
-                    for t, q in positions.items():
-                        if t not in queued['target_weights']:
-                            self.live_bot.submit_order(t, "SELL", int(q))
-                    
-                    # 2. Then Buys/Adjusts
-                    for t, w in queued['target_weights'].items():
-                        p = self.live_bot.price_cache.get(t, 0)
-                        if p > 0:
-                            t_q = int((nlv * queued['target_lev'] * w) / p)
-                            c_q = positions.get(t, 0)
-                            if abs(t_q - c_q) / (c_q + 1e-6) > 0.15:
-                                side = "BUY" if t_q > c_q else "SELL"
-                                self.live_bot.submit_order(t, side, int(abs(t_q - c_q)))
-                    
-                    self.redis_client.set("uqts:live:last_trade_date", today_str)
-                else:
-                    logger.info("LIVE MONITOR: In trade window but no queued T+1 signal found.")
+                    if queued.get("date") == today_str:
+                        exec_signal = queued
+                        logger.warning(f"🚀 LIVE EXECUTION: Deploying Locked T+1 Signal from {queued['date']}")
+
+                # 2. INSTANT START FALLBACK: If no signal from yesterday, use current rankings
+                if not exec_signal:
+                    exec_signal = pending_signal
+                    logger.warning("🚀 INSTANT START: No queued signal found. Deploying current Live Rankings.")
+
+                # Execute Sells
+                for t, q in positions.items():
+                    if t not in exec_signal['target_weights']:
+                        self.live_bot.submit_order(t, "SELL", int(q))
+
+                # Execute Buys/Adjusts
+                for t, w in exec_signal['target_weights'].items():
+                    p = self.live_bot.price_cache.get(t, 0)
+                    if p > 0:
+                        t_q = int((nlv * exec_signal['target_lev'] * w) / p)
+                        c_q = positions.get(t, 0)
+                        if abs(t_q - c_q) / (c_q + 1e-6) > 0.15:
+                            side = "BUY" if t_q > c_q else "SELL"
+                            self.live_bot.submit_order(t, side, int(abs(t_q - c_q)))
+
+                self.redis_client.set("uqts:live:last_trade_date", today_str)
 
             # Update UI view
-            self.sim_signal_queue = {
-                "date": (now + timedelta(days=1)).strftime("%Y-%m-%d"),
-                "target_lev": target_lev,
-                "concentration": concentration,
-                "ladder": picks_with_qty,
-                "adds_display": adds,
-                "sells_display": sells,
-                "status": "QUEUED (T+1)"
-            }
+            is_after_close = (now.hour > 16) or (now.hour == 16 and now.minute >= 5)
+            today_str = now.strftime("%Y-%m-%d")
             
-            # Daily Cycle: At 4:05 PM, promote current signal to 'queued' for tomorrow
-            if now.hour == 16 and 5 <= now.minute <= 10:
+            # SENIOR FIX (UI Transparency): Show 'TODAY' until the market closes.
+            queued_raw = self.redis_client.get("uqts:live:queued_signal")
+            display_signal = None
+            
+            if not is_after_close:
+                if queued_raw:
+                    queued = json.loads(queued_raw)
+                    if queued.get("date") == today_str:
+                        display_signal = queued
+                        display_signal["status"] = "LOCKED (TODAY)"
+                
+                # If no locked signal for today exists, show current thinking as 'LIVE (TODAY)'
+                if not display_signal:
+                    display_signal = {
+                        "date": today_str,
+                        "target_lev": target_lev,
+                        "concentration": concentration,
+                        "ladder": picks_with_qty,
+                        "adds_display": adds,
+                        "sells_display": sells,
+                        "status": "LIVE (TODAY)"
+                    }
+
+            if not display_signal:
+                # After close, show projection for tomorrow
+                display_signal = {
+                    "date": (now + timedelta(days=1)).strftime("%Y-%m-%d"),
+                    "target_lev": target_lev,
+                    "concentration": concentration,
+                    "ladder": picks_with_qty,
+                    "adds_display": adds,
+                    "sells_display": sells,
+                    "status": "LOCKED (T+1)" if (now.hour > 16 or (now.hour == 16 and now.minute >= 5)) else "PROJECTING (T+1)"
+                }
+
+            self.sim_signal_queue = display_signal
+
+            # Daily Cycle: Promote current signal to 'queued' for tomorrow if after 4:05 PM
+            # and we haven't already queued a signal for this trade date.
+            is_lock_time = (now.hour > 16) or (now.hour == 16 and now.minute >= 5)
+            last_queued_date = self.redis_client.get("uqts:live:last_queued_date")
+
+            if is_lock_time and last_queued_date != today_str:
                 self.redis_client.set("uqts:live:queued_signal", json.dumps(pending_signal, cls=NumpyEncoder))
-                logger.info("LIVE MONITOR: Signal locked and promoted to T+1 Queue.")
+                self.redis_client.set("uqts:live:last_queued_date", today_str)
+                logger.info(f"LIVE MONITOR: Signal for {today_str} locked and promoted to T+1 Queue.")
 
         prices_live = {e['ticker']: e['price'] for e in house_view['ladder']}
         pos_mv = sum(q * prices_live.get(t, 0.0) for t, q in positions.items())
@@ -704,22 +743,16 @@ class InferenceWorker:
                 # LIVE / PAPER MODE TELEMETRY
                 now = datetime.now()
                 
-                # SENIOR FIX (Stability): Lock 'now' to the last available market data bar 
-                # if the market is closed. This prevents the moving 'as_of' window from 
-                # causing micro-jitters in the AI scores.
+                # SENIOR FIX (Stability): Use the latest available market data bar 
+                # as the anchor for AI scoring. 
                 try:
                     db_last_str = self.data_engine.conn.execute("SELECT MAX(event_time) FROM market_data").fetchone()[0]
-                    db_last_dt = pd.to_datetime(db_last_str) if db_last_str else now
-                    # Only lock if we are more than 15 mins past the last bar
-                    if (now - db_last_dt).total_seconds() > 900:
-                        as_of_query = db_last_dt
-                    else:
-                        as_of_query = now
+                    as_of_query = pd.to_datetime(db_last_str) if db_last_str else now
                 except:
                     as_of_query = now
                 
                 # SENIOR FIX (Auto-Ingest): Check if we need fresh data for the latest rankings
-                if (now - last_live_ingest).total_seconds() > 900: # 15 mins
+                if (now - last_live_ingest).total_seconds() > 300: # 5 mins (more aggressive)
                     logger.info("INFERENCE WORKER: Triggering automated live ingestion...")
                     self.strategy.ingest_data(self.tickers, (now - timedelta(days=2)).strftime("%Y-%m-%d"), "now")
                     last_live_ingest = now

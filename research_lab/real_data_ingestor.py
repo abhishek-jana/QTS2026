@@ -41,8 +41,17 @@ class InstitutionalIngestor:
         missing_heads = {} # ticker -> adjusted_end
         
         target_start = pd.to_datetime(start_date).tz_localize('US/Eastern').tz_convert('UTC') if pd.to_datetime(start_date).tzinfo is None else pd.to_datetime(start_date).tz_convert('UTC')
-        target_end = pd.to_datetime(end_date).tz_localize('UTC') if pd.to_datetime(end_date).tzinfo is None else pd.to_datetime(end_date).tz_convert('UTC')
-        if end_date == "now": target_end = pd.Timestamp.now(tz='UTC')
+        
+        # SENIOR FIX (Market Hours Awareness): If end_date is "now", cap it to the most recent 4:00 PM EST.
+        # This prevents the system from chasing after-hours bars that we strictly filter out anyway.
+        if end_date == "now":
+            now_est = pd.Timestamp.now(tz='US/Eastern')
+            if now_est.time() > time(16, 0):
+                target_end = now_est.replace(hour=16, minute=0, second=0, microsecond=0).tz_convert('UTC')
+            else:
+                target_end = pd.Timestamp.now(tz='UTC')
+        else:
+            target_end = pd.to_datetime(end_date).tz_localize('UTC') if pd.to_datetime(end_date).tzinfo is None else pd.to_datetime(end_date).tz_convert('UTC')
 
         logger.info("🔍 Analyzing local database for data gaps...")
         for ticker in tickers:
