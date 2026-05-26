@@ -463,6 +463,7 @@ class InferenceWorker:
     async def _update_oms_live(self, house_view):
         # Implementation of live rebalance with ALPACA_LIVE safety gate
         now = datetime.now()
+        today_str = now.strftime("%Y-%m-%d")
         nlv, positions = await self.live_bot.hydrate_state(universe_tickers=self.tickers)
         self.peak_value = max(self.peak_value, nlv)
         
@@ -568,7 +569,6 @@ class InferenceWorker:
 
             # Update UI view
             is_after_close = (now.hour > 16) or (now.hour == 16 and now.minute >= 5)
-            today_str = now.strftime("%Y-%m-%d")
             
             # SENIOR FIX (UI Transparency): Show 'TODAY' until the market closes.
             queued_raw = self.redis_client.get("uqts:live:queued_signal")
@@ -581,7 +581,7 @@ class InferenceWorker:
                         display_signal = queued
                         display_signal["status"] = "LOCKED (TODAY)"
                 
-                # If no locked signal for today exists, show current thinking as 'LIVE (TODAY)'
+                # If no locked signal for today exists, show current thinking as 'PROJECTED (TODAY)'
                 if not display_signal:
                     display_signal = {
                         "date": today_str,
@@ -590,7 +590,7 @@ class InferenceWorker:
                         "ladder": picks_with_qty,
                         "adds_display": adds,
                         "sells_display": sells,
-                        "status": "LIVE (TODAY)"
+                        "status": "PROJECTED (TODAY)"
                     }
 
             if not display_signal:
@@ -602,7 +602,7 @@ class InferenceWorker:
                     "ladder": picks_with_qty,
                     "adds_display": adds,
                     "sells_display": sells,
-                    "status": "LOCKED (T+1)" if (now.hour > 16 or (now.hour == 16 and now.minute >= 5)) else "PROJECTING (T+1)"
+                    "status": "LOCKED (T+1)" if (now.hour > 16 or (now.hour == 16 and now.minute >= 5)) else "PROJECTED (T+1)"
                 }
 
             self.sim_signal_queue = display_signal

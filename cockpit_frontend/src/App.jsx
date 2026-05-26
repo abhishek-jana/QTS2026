@@ -766,9 +766,8 @@ export default function MissionControl() {
                     <div className="bg-emerald-500/5 border border-emerald-500/20 p-2 mt-4 rounded-sm animate-pulse">
                         <div className="text-[9px] font-black text-emerald-400 uppercase tracking-[0.2em] mb-2 flex justify-between border-b border-emerald-900/40 pb-1">
                             <span>
-                                {inst.pending_decision.status === 'LOCKED (TODAY)' ? '🔒 LOCKED Strategy (TODAY)' : 
-                                 inst.pending_decision.status === 'LOCKED (T+1)' ? '🔒 LOCKED Strategy (T+1)' : 
-                                 '🔮 PROJECTED Strategy (LIVE)'}
+                                {inst.pending_decision.status?.includes('LOCKED') ? '🔒 ' : '🔮 '}
+                                {inst.pending_decision.status}
                             </span>
                             <span>Lev: {inst.pending_decision.target_lev}x</span>
                         </div>
