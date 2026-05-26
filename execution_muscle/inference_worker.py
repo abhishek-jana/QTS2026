@@ -464,6 +464,12 @@ class InferenceWorker:
         # Implementation of live rebalance with ALPACA_LIVE safety gate
         now = datetime.now()
         today_str = now.strftime("%Y-%m-%d")
+        
+        # EFFICIENCY (Hoist): Fetch all external/persistent state once at the top to prevent scope errors
+        queued_raw = self.redis_client.get("uqts:live:queued_signal")
+        last_trade = self.redis_client.get("uqts:live:last_trade_date")
+        last_queued_date = self.redis_client.get("uqts:live:last_queued_date")
+        
         nlv, positions = await self.live_bot.hydrate_state(universe_tickers=self.tickers)
         self.peak_value = max(self.peak_value, nlv)
         
@@ -534,7 +540,6 @@ class InferenceWorker:
             
             # --- EXECUTION ENGINE TRIGGER ---
             is_trade_window = (now.hour == 15 and 50 <= now.minute <= 55)
-            last_trade = self.redis_client.get("uqts:live:last_trade_date")
 
             if is_trade_window and last_trade != today_str:
                 # 1. Try to load YESTERDAY'S signal
@@ -571,7 +576,6 @@ class InferenceWorker:
             is_after_close = (now.hour > 16) or (now.hour == 16 and now.minute >= 5)
             
             # SENIOR FIX (UI Transparency): Show 'TODAY' until the market closes.
-            queued_raw = self.redis_client.get("uqts:live:queued_signal")
             display_signal = None
             
             if not is_after_close:
@@ -602,15 +606,14 @@ class InferenceWorker:
                     "ladder": picks_with_qty,
                     "adds_display": adds,
                     "sells_display": sells,
-                    "status": "LOCKED (T+1)" if (now.hour > 16 or (now.hour == 16 and now.minute >= 5)) else "PROJECTED (T+1)"
+                    "status": "LOCKED (T+1)" if is_after_close else "PROJECTED (T+1)"
                 }
 
             self.sim_signal_queue = display_signal
 
             # Daily Cycle: Promote current signal to 'queued' for tomorrow if after 4:05 PM
             # and we haven't already queued a signal for this trade date.
-            is_lock_time = (now.hour > 16) or (now.hour == 16 and now.minute >= 5)
-            last_queued_date = self.redis_client.get("uqts:live:last_queued_date")
+            is_lock_time = is_after_close
 
             if is_lock_time and last_queued_date != today_str:
                 self.redis_client.set("uqts:live:queued_signal", json.dumps(pending_signal, cls=NumpyEncoder))
