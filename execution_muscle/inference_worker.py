@@ -539,7 +539,8 @@ class InferenceWorker:
             self.redis_client.set("uqts:live:pending_signal", json.dumps(pending_signal, cls=NumpyEncoder))
             
             # --- EXECUTION ENGINE TRIGGER ---
-            is_trade_window = (now.hour == 15 and 50 <= now.minute <= 60) or (now.hour == 16 and 0 <= now.minute <= 5)
+            # Expanded Window: 2:00 PM - 4:00 PM EST (allows more time for monitoring/debugging)
+            is_trade_window = (14 <= now.hour < 16)
 
             if is_trade_window and last_trade != today_str:
                 # 1. Try to load YESTERDAY'S signal

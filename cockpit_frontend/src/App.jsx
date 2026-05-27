@@ -414,7 +414,7 @@ const MissionManual = ({ isOpen, onClose }) => {
             <ul className="grid grid-cols-1 md:grid-cols-3 gap-4 text-[10px]">
               <li className="flex items-start gap-2 italic"><span className="text-emerald-500">&gt;&gt;</span> Ensure Redis is running (Service 6379)</li>
               <li className="flex items-start gap-2 italic"><span className="text-emerald-500">&gt;&gt;</span> Run bot after 4:05 PM to lock tomorrow's picks</li>
-              <li className="flex items-start gap-2 italic"><span className="text-emerald-500">&gt;&gt;</span> Launch bot by 3:45 PM for automated T+1 execution</li>
+              <li className="flex items-start gap-2 italic"><span className="text-emerald-500">&gt;&gt;</span> Launch bot by 1:45 PM for automated T+1 execution</li>
             </ul>
           </div>
 
