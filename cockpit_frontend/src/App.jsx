@@ -799,7 +799,7 @@ export default function MissionControl() {
                             )}
                         </div>
 
-                        <div className="text-[8px] text-slate-500 mt-2 italic font-bold border-t border-slate-900 pt-1">Planned at {inst.pending_decision.date} :: Dispatches at 15:50 EST</div>
+                        <div className="text-[8px] text-slate-500 mt-2 italic font-bold border-t border-slate-900 pt-1">Planned at {inst.pending_decision.date} :: Dispatches 14:00 - 16:00 EST</div>
                     </div>
                 )}
             </div>
