@@ -40,7 +40,7 @@ execution_muscle:
   trading_mode: live
   # Explicit live-trading flag. Orders are only submitted if BOTH
   # this is true AND the env var ALPACA_LIVE=1 is set.
-  live_trading: false
+  live_trading: true
 
 model_pipeline:
   architecture:
