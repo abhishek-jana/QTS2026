@@ -125,8 +125,8 @@ class InferenceWorker:
         
         self.live_bot = None
         if self.trading_mode in ['paper', 'live']:
-            self.live_bot = AsyncPaperBot(self.config, 100000.0)
-            logger.info("INFERENCE WORKER: Live Bridge active.")
+            self.live_bot = AsyncPaperBot(self.config, 100000.0, mode=self.trading_mode)
+            logger.info(f"INFERENCE WORKER: Live Bridge active ({self.trading_mode}).")
         
         self.is_killed = False
 
@@ -526,9 +526,15 @@ class InferenceWorker:
                 self._last_log_time = curr_time
 
             # --- T+1 PERSISTENCE ---
+            # SENIOR FIX (Weekend Awareness): Skip Saturday and Sunday for T+1
+            next_trade_date = now + timedelta(days=1)
+            while next_trade_date.weekday() >= 5: # 5=Sat, 6=Sun
+                next_trade_date += timedelta(days=1)
+            next_trade_date_str = next_trade_date.strftime("%Y-%m-%d")
+
             # Save the latest signal to Redis for tomorrow's execution
             pending_signal = {
-                "date": (now + timedelta(days=1)).strftime("%Y-%m-%d"),
+                "date": next_trade_date_str,
                 "target_lev": target_lev,
                 "concentration": concentration,
                 "target_weights": target_weights,
@@ -601,7 +607,7 @@ class InferenceWorker:
             if not display_signal:
                 # After close, show projection for tomorrow
                 display_signal = {
-                    "date": (now + timedelta(days=1)).strftime("%Y-%m-%d"),
+                    "date": next_trade_date_str,
                     "target_lev": target_lev,
                     "concentration": concentration,
                     "ladder": picks_with_qty,

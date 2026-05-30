@@ -870,7 +870,9 @@ export default function MissionControl() {
                                 <span className="text-slate-500 font-bold uppercase text-[9px] opacity-60 tracking-tighter">QTY: {log.qty}</span>
                                 <span className="text-emerald-500 font-black tracking-tighter italic shadow-sm">${(log.notional || 0).toLocaleString()}</span>
                             </div>
-                            <span className="text-emerald-500 font-black uppercase text-[8px] tracking-[0.2em] bg-emerald-500/5 px-2 py-0.5 border border-emerald-900/30 rounded-sm shadow-inner">Filled</span>
+                            <span className={`font-black uppercase text-[8px] tracking-[0.2em] px-2 py-0.5 border rounded-sm shadow-inner ${log.status === 'FILLED' ? 'text-emerald-500 bg-emerald-500/5 border-emerald-900/30' : 'text-rose-500 bg-rose-500/5 border-rose-900/30'}`}>
+                                {log.status}
+                            </span>
                         </div>
                     ))}
                     {(!inst.order_log || inst.order_log.length === 0) && <div className="h-full flex items-center justify-center text-slate-800 italic uppercase tracking-[0.4em] animate-pulse text-[10px] font-black">Awaiting instructions...</div>}
