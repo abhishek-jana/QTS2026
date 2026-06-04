@@ -513,14 +513,36 @@ class InferenceWorker:
             if not hasattr(self, '_last_log_time'): self._last_log_time = 0
             curr_time = time.time()
             
-            picks_display = [f"{x['ticker']}({x['qty']})" for x in picks_with_qty]
-            current_log_hash = hash(str(picks_display) + str(adds) + str(sells))
+            # DETERMINISTIC SYNC: If we have a signal queued for TODAY, the log should
+            # strictly show that plan until the trade is executed or the day ends.
+            # This prevents the user from seeing "AI Decision" flicker while a trade is pending.
+            is_trade_done = last_trade == today_str
+            queued_for_today = None
+            if queued_raw:
+                q_obj = json.loads(queued_raw)
+                if q_obj.get("date") == today_str:
+                    queued_for_today = q_obj
+
+            if queued_for_today and not is_trade_done:
+                log_label = "🔒 [QUEUED FOR 14:00]"
+                log_target_lev = queued_for_today['target_lev']
+                log_picks = [f"{x['ticker']}({x['qty']})" for x in queued_for_today['ladder']]
+                log_adds = queued_for_today.get('adds_display', [])
+                log_sells = queued_for_today.get('sells_display', [])
+            else:
+                log_label = "🔮 [LIVE PROJECTION]"
+                log_target_lev = target_lev
+                log_picks = [f"{x['ticker']}({x['qty']})" for x in picks_with_qty]
+                log_adds = adds
+                log_sells = sells
+
+            current_log_hash = hash(str(log_picks) + str(log_adds) + str(log_sells))
             
             if not hasattr(self, '_last_log_hash') or self._last_log_hash != current_log_hash or (curr_time - self._last_log_time) > 60:
-                log_msg = f"🔮 [LIVE MONITOR] AI Decision: Lev {target_lev:.2f}x\n"
-                log_msg += f"   >> PICKS: {picks_display}\n"
-                if adds: log_msg += f"   >> ADDS : {adds}\n"
-                if sells: log_msg += f"   >> SELLS: {sells}"
+                log_msg = f"{log_label} AI Decision: Lev {log_target_lev:.2f}x\n"
+                log_msg += f"   >> PICKS: {log_picks}\n"
+                if log_adds: log_msg += f"   >> ADDS : {log_adds}\n"
+                if log_sells: log_msg += f"   >> SELLS: {log_sells}"
                 logger.info(log_msg)
                 self._last_log_hash = current_log_hash
                 self._last_log_time = curr_time
