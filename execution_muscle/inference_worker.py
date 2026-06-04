@@ -603,11 +603,13 @@ class InferenceWorker:
 
             # Update UI view
             is_after_close = (now.hour > 16) or (now.hour == 16 and now.minute >= 5)
+            is_trade_done = last_trade == today_str
             
-            # SENIOR FIX (UI Transparency): Show 'TODAY' until the market closes.
+            # SENIOR FIX (UI Transparency): Show 'TODAY' until the market closes or trade is done.
             display_signal = None
             
-            if not is_after_close:
+            # 1. MORNING PHASE: If trade is not done, show the LOCKED signal for today.
+            if not is_after_close and not is_trade_done:
                 if queued_raw:
                     queued = json.loads(queued_raw)
                     if queued.get("date") == today_str:
@@ -626,8 +628,9 @@ class InferenceWorker:
                         "status": "PROJECTED (TODAY)"
                     }
 
+            # 2. AFTERNOON PHASE: If trade is done OR market is closed, look forward to tomorrow.
             if not display_signal:
-                # After close, show projection for tomorrow
+                # After trade/close, show projection for the next trade date
                 display_signal = {
                     "date": next_trade_date_str,
                     "target_lev": target_lev,
@@ -813,12 +816,15 @@ class InferenceWorker:
                     spy_nlv = (float(spy_p) / (self.spy_start_p or float(spy_p))) * 100000.0
                     dt_key = now.strftime("%Y-%m-%d %H:%M")
                     
-                    self.performance_history.append({"time": dt_key, "portfolio": stats['nlv'], "spy": spy_nlv})
-                    alpha_val = ((float(stats['nlv'])/100000.0)-(float(spy_nlv)/100000.0))*100.0
-                    self.alpha_history.append({"time": dt_key, "alpha": alpha_val})
-                    
-                    if len(self.performance_history) > 250: self.performance_history.pop(0)
-                    if len(self.alpha_history) > 250: self.alpha_history.pop(0)
+                    # SENIOR FIX (Efficiency): Only append to history if the minute has changed
+                    # This prevents 60x duplicate records and keeps charts stable.
+                    if not self.performance_history or self.performance_history[-1]['time'] != dt_key:
+                        self.performance_history.append({"time": dt_key, "portfolio": stats['nlv'], "spy": spy_nlv})
+                        alpha_val = ((float(stats['nlv'])/100000.0)-(float(spy_nlv)/100000.0))*100.0
+                        self.alpha_history.append({"time": dt_key, "alpha": alpha_val})
+                        
+                        if len(self.performance_history) > 250: self.performance_history.pop(0)
+                        if len(self.alpha_history) > 250: self.alpha_history.pop(0)
                     
                     # Publish Telemetry
                     ladder_ui = []

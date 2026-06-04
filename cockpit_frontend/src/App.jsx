@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo, memo } from 'react';
 import { createChart, ColorType, CandlestickSeries } from 'lightweight-charts';
 import { 
   Activity, ShieldAlert, TrendingUp, Zap, Terminal, Cpu, Gauge, AlertTriangle,
@@ -91,7 +91,7 @@ const TICKER_NAMES = {
   "RTX": "Raytheon Technologies"
 };
 
-const PriceChart = ({ data, ticker }) => {
+const PriceChart = memo(({ data, ticker }) => {
   const chartContainerRef = useRef(); 
   const chartRef = useRef(); 
   const seriesRef = useRef();
@@ -105,13 +105,13 @@ const PriceChart = ({ data, ticker }) => {
     { label: 'ALL', val: null }
   ];
 
-  const cleanData = React.useMemo(() => {
+  const cleanData = useMemo(() => {
     if (!data) return [];
     const seen = new Set();
     return data.filter(d => !seen.has(d.time) && seen.add(d.time)).sort((a, b) => a.time - b.time);
   }, [data]);
 
-  const rangeReturn = React.useMemo(() => {
+  const rangeReturn = useMemo(() => {
     if (cleanData.length < 2) return 0;
     const last = cleanData[cleanData.length - 1].close;
     let first = cleanData[0].close;
@@ -136,8 +136,8 @@ const PriceChart = ({ data, ticker }) => {
     chartRef.current = chart; seriesRef.current = series;
     
     const handleResize = () => {
-      if (chartContainerRef.current) {
-        chart.applyOptions({ width: chartContainerRef.current.clientWidth });
+      if (chartContainerRef.current && chartRef.current) {
+        chartRef.current.applyOptions({ width: chartContainerRef.current.clientWidth });
       }
     };
     window.addEventListener('resize', handleResize);
@@ -178,23 +178,28 @@ const PriceChart = ({ data, ticker }) => {
       <div ref={chartContainerRef} className="w-full h-[220px] bg-black shadow-2xl border border-slate-800/60" />
     </div>
   );
-};
+});
 
-const BenchmarkChart = ({ history }) => {
+const BenchmarkChart = memo(({ history }) => {
   if (!history || history.length < 2) return <div className="h-full w-full flex items-center justify-center text-slate-500 text-[10px] uppercase tracking-widest italic font-black">Awaiting Benchmarking...</div>;
   
   const initialPort = history[0].portfolio || 1;
   const initialSpy = history[0].spy || 1;
   
-  // SENIOR FIX: Do not normalize to 100k. Show actual raw Net Liq to match the top bar.
-  // The percentage return is still calculated correctly from the start of the window.
-  const chartData = history.map(d => ({
-    time: d.time,
-    portfolio: d.portfolio,
-    spy: d.spy,
-    portPct: ((d.portfolio / initialPort) - 1) * 100,
-    spyPct: ((d.spy / initialSpy) - 1) * 100
-  }));
+  const chartData = useMemo(() => {
+    const seen = new Set();
+    return history.filter(d => {
+        if (seen.has(d.time)) return false;
+        seen.add(d.time);
+        return true;
+    }).map(d => ({
+        time: d.time,
+        portfolio: d.portfolio,
+        spy: d.spy,
+        portPct: ((d.portfolio / initialPort) - 1) * 100,
+        spyPct: ((d.spy / initialSpy) - 1) * 100
+    }));
+  }, [history, initialPort, initialSpy]);
 
   const latestPort = chartData[chartData.length - 1].portfolio;
   const latestSpy = chartData[chartData.length - 1].spy;
@@ -257,37 +262,63 @@ const BenchmarkChart = ({ history }) => {
         </div>
     </div>
   );
-};
+});
 
-const Heatmap = ({ data, title }) => {
+const Heatmap = memo(({ data, title }) => {
   const canvasRef = useRef();
   useEffect(() => {
     if (!canvasRef.current || !data || data.length === 0) return;
     const canvas = canvasRef.current; const ctx = canvas.getContext('2d');
     const rows = data.length; const cols = data[0].length; canvas.width = cols; canvas.height = rows;
-    const imageData = ctx.createImageData(cols, rows); const flatData = data.flat(); const maxVal = Math.max(...flatData.slice(0, 10000), 0.000001);
+    
+    const imageData = ctx.createImageData(cols, rows);
+    const buf = new Uint32Array(imageData.data.buffer);
+    
+    let maxVal = 0.000001;
+    for (let i = 0; i < rows; i++) {
+        for (let j = 0; j < cols; j++) {
+            if (data[i][j] > maxVal) maxVal = data[i][j];
+        }
+    }
+
     for (let i = 0; i < rows; i++) {
       for (let j = 0; j < cols; j++) {
-        const val = data[i][j]; const ratio = Math.min(1.0, val / maxVal); const idx = (i * cols + j) * 4;
-        imageData.data[idx] = ratio * 400; imageData.data[idx+1] = (ratio - 0.2) * 500; imageData.data[idx+2] = (ratio - 0.5) * 600; imageData.data[idx+3] = 255;
+        const val = data[i][j]; 
+        const ratio = Math.min(1.0, val / maxVal);
+        const r = Math.floor(ratio * 400);
+        const g = Math.floor(Math.max(0, (ratio - 0.2) * 500));
+        const b = Math.floor(Math.max(0, (ratio - 0.5) * 600));
+        
+        buf[i * cols + j] = (255 << 24) | (b << 16) | (g << 8) | r;
       }
     }
     ctx.putImageData(imageData, 0, 0);
   }, [data]);
+
   return (
     <div className="w-full h-full flex flex-col min-h-0">
       <div className="text-[9px] font-black text-slate-400 mb-1 uppercase tracking-widest">{title}</div>
       <div className="h-64 relative border border-slate-800/60 bg-black overflow-hidden shadow-2xl"><canvas ref={canvasRef} className="absolute inset-0 w-full h-full" style={{ imageRendering: 'pixelated' }} /></div>
     </div>
   );
-};
+});
 
 const SortableRow = ({ row, onSelectTicker }) => {
   const [flash, setFlash] = useState(null);
   const prevPriceRef = useRef(row.live_price);
-  useEffect(() => { if (row.live_price !== prevPriceRef.current) { setFlash(row.live_price > prevPriceRef.current ? 'up' : 'down'); setTimeout(() => setFlash(null), 800); prevPriceRef.current = row.live_price; } }, [row.live_price]);
+  
+  useEffect(() => { 
+    if (row.live_price !== prevPriceRef.current) { 
+        setFlash(row.live_price > prevPriceRef.current ? 'up' : 'down'); 
+        const timer = setTimeout(() => setFlash(null), 800); 
+        prevPriceRef.current = row.live_price;
+        return () => clearTimeout(timer);
+    } 
+  }, [row.live_price]);
+
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: row.ticker });
   const style = { transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.5 : 1, zIndex: isDragging ? 50 : 1, backgroundColor: flash === 'up' ? 'rgba(16, 185, 129, 0.1)' : flash === 'down' ? 'rgba(239, 68, 68, 0.1)' : 'transparent' };
+  
   return (
     <tr ref={setNodeRef} style={style} className="border-b border-slate-800/40 hover:bg-slate-800/60 cursor-pointer group font-mono tabular-nums transition-colors text-[11px]">
       <td className="py-1.5 pl-2 w-8"><div {...attributes} {...listeners} className="cursor-grab p-1 text-slate-500 hover:text-emerald-500"><GripVertical className="w-3 h-3" /></div></td>
@@ -312,9 +343,9 @@ const SortableRow = ({ row, onSelectTicker }) => {
   );
 };
 
-const RankingGrid = ({ ladder, onSelectTicker, filterSector, tickerOrder, sensors, handleDragEnd }) => {
+const RankingGrid = memo(({ ladder, onSelectTicker, filterSector, tickerOrder, sensors, handleDragEnd }) => {
   const [showHoldingsOnly, setShowHoldingsOnly] = useState(false);
-  const sortedData = React.useMemo(() => {
+  const sortedData = useMemo(() => {
     if (!ladder || !tickerOrder) return [];
     const map = {}; ladder.forEach(item => { map[item.ticker] = item; });
     let items = tickerOrder.map(ticker => map[ticker]).filter(item => item !== undefined);
@@ -334,22 +365,22 @@ const RankingGrid = ({ ladder, onSelectTicker, filterSector, tickerOrder, sensor
             <tr><th className="w-8"></th><th className="text-left py-2 tracking-widest">Ticker</th><th className="text-right py-2 pr-4 tracking-widest">Price</th><th className="text-right py-2 pr-4 tracking-widest">Score</th><th className="text-right py-2 pr-4 tracking-widest">Position</th><th className="text-right py-2 pr-2 tracking-widest font-bold">Action</th></tr>
           </thead>
           <SortableContext items={tickerOrder} strategy={verticalListSortingStrategy}>
-            <tbody>{sortedData.map((row) => (<SortableRow key={row.ticker} row={row} onSelectTicker={onSelectTicker} />))}</tbody>
+            <tbody style={{willChange: 'transform'}}>{sortedData.map((row) => (<SortableRow key={row.ticker} row={row} onSelectTicker={onSelectTicker} />))}</tbody>
           </SortableContext>
         </table>
       </DndContext>
     </div>
   );
-};
+});
 
-const Panel = ({ title, icon: Icon, children, className = "" }) => (
+const Panel = memo(({ title, icon: Icon, children, className = "" }) => (
   <div className={"bg-black border border-slate-800/60 p-4 flex flex-col h-full shadow-2xl backdrop-blur-md " + className}>
     <div className="flex items-center gap-2 mb-3 border-b border-slate-800/60 pb-2"><Icon className="w-3.5 h-3.5 text-emerald-500/80" /><h2 className="text-[10px] font-black uppercase tracking-[0.4em] text-slate-400">{title}</h2></div>
     <div className="flex-1">{children}</div>
   </div>
-);
+));
 
-const MissionManual = ({ isOpen, onClose }) => {
+const MissionManual = memo(({ isOpen, onClose }) => {
   if (!isOpen) return null;
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/90 backdrop-blur-xl p-4 sm:p-20 font-mono text-slate-300 leading-relaxed">
@@ -391,7 +422,7 @@ const MissionManual = ({ isOpen, onClose }) => {
                 <Zap className="w-4 h-4" /> 3. Execution Muscle (C++26)
               </h3>
               <div className="space-y-2">
-                <p><span className="text-emerald-400 font-bold">WINDOW:</span> Orders are automatically routed between <span className="text-white">3:50 PM and 3:55 PM EST</span> on Day T+1.</p>
+                <p><span className="text-emerald-400 font-bold">WINDOW:</span> Orders are automatically routed between <span className="text-white">2:00 PM and 4:00 PM EST</span> on Day T+1.</p>
                 <p><span className="text-emerald-400 font-bold">SLIPPAGE:</span> All fills assume a <span className="text-white">15bps</span> institutional tax. The Implementation Shortfall monitors gap variance between decision and fill.</p>
                 <p><span className="text-emerald-400 font-bold">SAFETY:</span> Live trading requires <span className="text-rose-500">ALPACA_LIVE=1</span> environment variable AND <span className="text-white">live_trading: true</span> in config.yaml.</p>
               </div>
@@ -426,9 +457,9 @@ const MissionManual = ({ isOpen, onClose }) => {
       </div>
     </div>
   );
-};
+});
 
-const ShapChart = ({ data }) => {
+const ShapChart = memo(({ data }) => {
   if (!data) return null;
   const chartData = Object.entries(data).map(([name, value]) => ({ name: name.split(' ')[0], value }));
   return (
@@ -449,19 +480,26 @@ const ShapChart = ({ data }) => {
       </div>
     </div>
   );
-};
+});
 
-const AlphaGainChart = ({ data }) => {
+const AlphaGainChart = memo(({ data }) => {
   const [range, setRange] = useState('ALL');
   const ranges = [{ label: '1W', val: 7 }, { label: '1M', val: 30 }, { label: '3M', val: 90 }, { label: '1Y', val: 365 }, { label: 'ALL', val: null }];
   
-  const { filteredData, rangeAlpha, splitOffset } = React.useMemo(() => {
+  const { filteredData, rangeAlpha, splitOffset } = useMemo(() => {
     if (!data || data.length === 0) return { filteredData: [], rangeAlpha: 0, splitOffset: 0 };
     
-    let slice = data;
+    const seen = new Set();
+    const uniqueData = data.filter(d => {
+        if (seen.has(d.time)) return false;
+        seen.add(d.time);
+        return true;
+    });
+
+    let slice = uniqueData;
     if (range !== 'ALL') {
       const r = ranges.find(x => x.label === range);
-      slice = data.slice(-r.val);
+      slice = uniqueData.slice(-r.val);
     }
     
     if (slice.length < 2) return { filteredData: slice, rangeAlpha: 0, splitOffset: 0 };
@@ -469,14 +507,13 @@ const AlphaGainChart = ({ data }) => {
     const latest = slice[slice.length - 1].alpha;
     const start = slice[0].alpha;
     
-    // Calculate precise gradient offset for the 0.0 line
     const alphas = slice.map(d => d.alpha);
     const dataMax = Math.max(...alphas);
     const dataMin = Math.min(...alphas);
     
     let offset = 0;
-    if (dataMax <= 0) offset = 0; // Entirely below zero
-    else if (dataMin >= 0) offset = 1; // Entirely above zero
+    if (dataMax <= 0) offset = 0;
+    else if (dataMin >= 0) offset = 1;
     else offset = dataMax / (dataMax - dataMin);
 
     return { filteredData: slice, rangeAlpha: latest - start, splitOffset: offset };
@@ -521,7 +558,7 @@ const AlphaGainChart = ({ data }) => {
       </div>
     </div>
   );
-};
+});
 
 const TelemetryFailsafe = () => (
   <div className="h-full w-full flex flex-col items-center justify-center text-emerald-500/20 font-mono gap-3 animate-pulse uppercase tracking-[0.3em] text-[9px] py-20">
@@ -586,9 +623,9 @@ export default function MissionControl() {
       
       if (!ws.current || ws.current.readyState !== WebSocket.OPEN) {
         setStatus(prev => prev !== 'connecting' ? 'disconnected' : 'connecting');
-      } else if (diff > 10000) {
+      } else if (diff > 15000) {
         setStatus('disconnected');
-      } else if (diff > 5000) {
+      } else if (diff > 8000) {
         setStatus('stale');
       } else {
         setStatus('active');
@@ -606,7 +643,7 @@ export default function MissionControl() {
       clearInterval(autoReconnect);
       ws.current?.close();
     };
-  }, []); // EMPTY dependency array is critical
+  }, []);
 
   const handleDragEnd = (event) => {
     const { active, over } = event;
