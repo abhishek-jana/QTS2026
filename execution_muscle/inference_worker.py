@@ -152,10 +152,25 @@ class InferenceWorker:
                     except: return default
 
                 hist = self.redis_client.get('uqts:live:performance_history')
-                if hist: self.performance_history = json.loads(hist)
+                if hist: 
+                    raw_hist = json.loads(hist)
+                    # SENIOR FIX (Stability): Deduplicate timestamps during recovery
+                    seen = set()
+                    self.performance_history = []
+                    for d in raw_hist:
+                        if d['time'] not in seen:
+                            self.performance_history.append(d)
+                            seen.add(d['time'])
                 
                 a_hist = self.redis_client.get('uqts:live:alpha_history')
-                if a_hist: self.alpha_history = json.loads(a_hist)
+                if a_hist: 
+                    raw_a_hist = json.loads(a_hist)
+                    seen_a = set()
+                    self.alpha_history = []
+                    for d in raw_a_hist:
+                        if d['time'] not in seen_a:
+                            self.alpha_history.append(d)
+                            seen_a.add(d['time'])
                 
                 self.cumulative_fees = _safe_float(self.redis_client.get('uqts:live:cumulative_fees'))
                 
@@ -716,10 +731,10 @@ class InferenceWorker:
                     self.performance_history.append({"time": dt_key, "portfolio": stats['nlv'], "spy": spy_nlv})
                     
                     self.alpha_history.append({"time": dt_key, "alpha": ((float(stats['nlv'])/100000.0)-(float(spy_nlv)/100000.0))*100.0})
-                    if len(self.alpha_history) > 250:
+                    if len(self.alpha_history) > 500:
                         self.alpha_history.pop(0)
                         
-                    if len(self.performance_history) > 250:
+                    if len(self.performance_history) > 500:
                         self.performance_history.pop(0)
                     
                     # Publish UI Telemetry
@@ -814,17 +829,30 @@ class InferenceWorker:
                     # Live SPY Benchmarking
                     spy_p = self.live_bot.price_cache.get('SPY', self.spy_df.iloc[-1]['close'])
                     spy_nlv = (float(spy_p) / (self.spy_start_p or float(spy_p))) * 100000.0
-                    dt_key = now.strftime("%Y-%m-%d %H:%M")
+                    # SENIOR FIX (Efficiency): Downsample to Daily resolution for uniform X-axis.
+                    # This prevents memory bloat and ensures the chart doesn't crowd on the current date.
+                    dt_key = now.strftime("%Y-%m-%d")
                     
-                    # SENIOR FIX (Efficiency): Only append to history if the minute has changed
-                    # This prevents 60x duplicate records and keeps charts stable.
-                    if not self.performance_history or self.performance_history[-1]['time'] != dt_key:
-                        self.performance_history.append({"time": dt_key, "portfolio": stats['nlv'], "spy": spy_nlv})
-                        alpha_val = ((float(stats['nlv'])/100000.0)-(float(spy_nlv)/100000.0))*100.0
-                        self.alpha_history.append({"time": dt_key, "alpha": alpha_val})
+                    if not self.performance_history or self.performance_history[-1]['time'][:10] != dt_key:
+                        # If the last entry was for today (even if it had HH:MM), replace it or just append if it's a new day
+                        if self.performance_history and self.performance_history[-1]['time'][:10] == dt_key:
+                            self.performance_history[-1] = {"time": dt_key, "portfolio": stats['nlv'], "spy": spy_nlv}
+                            alpha_val = ((float(stats['nlv'])/100000.0)-(float(spy_nlv)/100000.0))*100.0
+                            self.alpha_history[-1] = {"time": dt_key, "alpha": alpha_val}
+                        else:
+                            self.performance_history.append({"time": dt_key, "portfolio": stats['nlv'], "spy": spy_nlv})
+                            alpha_val = ((float(stats['nlv'])/100000.0)-(float(spy_nlv)/100000.0))*100.0
+                            self.alpha_history.append({"time": dt_key, "alpha": alpha_val})
                         
-                        if len(self.performance_history) > 250: self.performance_history.pop(0)
-                        if len(self.alpha_history) > 250: self.alpha_history.pop(0)
+                        # CAP: 500 days for a clean multi-year view
+                        if len(self.performance_history) > 500: self.performance_history.pop(0)
+                        if len(self.alpha_history) > 500: self.alpha_history.pop(0)
+                        
+                        # Persist to Redis (Ensures state survives worker restarts)
+                        try:
+                            self.redis_client.set('uqts:live:performance_history', json.dumps(self.performance_history))
+                            self.redis_client.set('uqts:live:alpha_history', json.dumps(self.alpha_history))
+                        except: pass
                     
                     # Publish Telemetry
                     ladder_ui = []

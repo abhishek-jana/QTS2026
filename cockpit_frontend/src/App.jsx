@@ -272,24 +272,27 @@ const Heatmap = memo(({ data, title }) => {
     const rows = data.length; const cols = data[0].length; canvas.width = cols; canvas.height = rows;
     
     const imageData = ctx.createImageData(cols, rows);
-    const buf = new Uint32Array(imageData.data.buffer);
+    const flatData = data.flat();
     
-    let maxVal = 0.000001;
-    for (let i = 0; i < rows; i++) {
-        for (let j = 0; j < cols; j++) {
-            if (data[i][j] > maxVal) maxVal = data[i][j];
-        }
-    }
+    // Robust Normalization: Use 95th percentile estimate to normalize the heatmap.
+    // This prevents outliers from ruining the contrast while ensuring consistent colors.
+    const sample = [];
+    const step = Math.max(1, Math.floor(flatData.length / 2000)); 
+    for(let i=0; i<flatData.length; i+=step) sample.push(flatData[i]);
+    sample.sort((a,b) => a-b);
+    const maxVal = sample[Math.floor(sample.length * 0.95)] || 0.000001;
 
     for (let i = 0; i < rows; i++) {
       for (let j = 0; j < cols; j++) {
         const val = data[i][j]; 
         const ratio = Math.min(1.0, val / maxVal);
-        const r = Math.floor(ratio * 400);
-        const g = Math.floor(Math.max(0, (ratio - 0.2) * 500));
-        const b = Math.floor(Math.max(0, (ratio - 0.5) * 600));
+        const idx = (i * cols + j) * 4;
         
-        buf[i * cols + j] = (255 << 24) | (b << 16) | (g << 8) | r;
+        // Original Sniper Aesthetics: Black -> Red -> Orange -> Yellow -> White
+        imageData.data[idx] = ratio * 400; 
+        imageData.data[idx+1] = (ratio - 0.2) * 500; 
+        imageData.data[idx+2] = (ratio - 0.5) * 600; 
+        imageData.data[idx+3] = 255;
       }
     }
     ctx.putImageData(imageData, 0, 0);
